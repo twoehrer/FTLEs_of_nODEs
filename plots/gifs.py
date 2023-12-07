@@ -49,7 +49,7 @@ def evo_gif(trainer, num_epochs, plotfreq, subfolder, filename, title_left = 'le
 
 
 def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
-                   alpha_line=1, filename='trajectory.gif', axlim = 0):
+                   alpha_line=1, filename='trajectory.gif', axlim = 0, ticks = True):
     
     from matplotlib import rc
     from scipy.interpolate import interp1d
@@ -60,13 +60,20 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
     if not filename.endswith(".gif"):
         raise RuntimeError("Name must end in with .gif, but ends with {}".format(filename))
     base_filename = filename[:-4]
+    
+    
+        
 
     ## We focus on 3 colors at most
-    if False in (t < 2 for t in targets): 
+    if len(targets.shape) == 1 and False in (t < 2 for t in targets): 
         color = ['mediumpurple' if targets[i] == 2.0 else 'gold' if targets[i] == 0.0 else 'mediumseagreen' for i in range(len(targets))]
     else:
         #color = ['crimson' if targets[i, 0] > 0.0 else 'dodgerblue' for i in range(len(targets))]
-        color = ['C1' if targets[i] > 0.0 else 'C0' for i in range(len(targets))]
+        if len(targets.shape) > 1: #checks if labels are in form of scalars (for cross entropy) or vectors (for square loss)
+            color = ['C1' if targets[i,0] > 0.0 else 'C0' for i in range(len(targets))]
+        else:
+            
+            color = ['C1' if targets[i] > 0.0 else 'C0' for i in range(len(targets))]
 
     trajectories = model.flow.trajectory(inputs, timesteps).detach()
     num_dims = trajectories.shape[2]
@@ -130,6 +137,10 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
             plt.scatter([x(_time)[t] for x in interp_x], 
                          [y(_time)[t] for y in interp_y], 
                          c=color, alpha=alpha, marker = 'o', linewidth=0.65, edgecolors='black', zorder=3)
+            
+            if ticks == False:
+                ax.set_xticks([])
+                ax.set_yticks([])
 
             if t > 0:
                 for i in range(inputs.shape[0]):

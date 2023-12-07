@@ -196,8 +196,8 @@ class doublebackTrainer():
         if cross_entropy:
             self.loss_func = losses['cross_entropy']
         else:
-            #self.loss_func = losses['mse']
-            self.loss_func = nn.MultiMarginLoss()
+            # self.loss_func = losses['mse']
+            self.loss_func = nn.MSELoss()
         self.print_freq = print_freq
         self.record_freq = record_freq
         self.steps = 0
@@ -266,7 +266,7 @@ class doublebackTrainer():
                 T = time_steps
                 dt = 1 
 
-                                               ## Classical empirical risk minimization
+            ## Classical empirical risk minimization
             loss = self.loss_func(y_pred, y_batch)
             loss_rob = torch.tensor(0.)
             # v = torch.tensor([0,1.])
@@ -590,10 +590,16 @@ class epsTrainer():
                                              ## Classical empirical risk minimization
                 
 
-def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2]):
+def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2], label = 'scalar', ticks = True, markersize = 50):
+    label_types = ['scalar', 'vector']
+    if label not in label_types:
+        raise ValueError("Invalid label type. Expected one of: %s" % label_types)
+    
+    
     if data_type == 'circles':
         X, y = make_circles(batch_size, noise=noise, factor=factor, random_state=random_state, shuffle = shuffle)
-        
+
+
         
     elif data_type == 'blobs':
         centers = [[-1, -1], [1, 1]]
@@ -615,6 +621,9 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
     else: 
         print('datatype not supported')
         return None, None
+    
+    if label == 'vector':
+        y = np.array([(2., 0.) if label == 1 else (-2., 0.) for label in y])
 
     g = torch.Generator()
     g.manual_seed(random_state)
@@ -628,11 +637,20 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
     X_test = torch.Tensor(X_test) # transform to torch tensor for dataloader
     y_test = torch.Tensor(y_test) #transform to torch tensor for dataloader
 
-    X_train = X_train.type(torch.float32)  #type of orginial pickle.load data
-    y_train = y_train.type(torch.int64) #dtype of original picle.load data
 
-    X_test = X_test.type(torch.float32)  #type of orginial pickle.load data
-    y_test = y_test.type(torch.int64) #dtype of original picle.load data
+    if label == 'scalar':
+        X_train = X_train.type(torch.float32)  #type of orginial pickle.load data
+        y_train = y_train.type(torch.int64) #dtype of original picle.load data
+
+        X_test = X_test.type(torch.float32)  #type of orginial pickle.load data
+        y_test = y_test.type(torch.int64) #dtype of original picle.load data
+        
+    else:
+        X_train = X_train.type(torch.float32)  #type of orginial pickle.load data
+        y_train = y_train.type(torch.float32) #dtype of original picle.load data
+
+        X_test = X_test.type(torch.float32)  #type of orginial pickle.load data
+        y_test = y_test.type(torch.float32) #dtype of original picle.load data
 
 
     train_data = TensorDataset(X_train,y_train) # create your datset
@@ -640,16 +658,25 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
 
     train = DataLoader(train_data, batch_size=64, shuffle=shuffle, generator=g)
     test = DataLoader(test_data, batch_size=256, shuffle=shuffle, generator = g) #128 before
-    
-    data_0 = X_train[y_train == 0]
-    data_1 = X_train[y_train == 1]
+    if label == 'scalar':
+        data_0 = X_train[y_train == 0]
+        data_1 = X_train[y_train == 1]
+    else:
+        data_0 = X_train[y_train[:,0] > 0]
+        data_1 = X_train[y_train[:,0] < 0]
     fig = plt.figure(figsize = (5,5), dpi = 100)
-    plt.scatter(data_0[:, 0], data_0[:, 1], edgecolor="#333",  alpha = 0.5)
-    plt.scatter(data_1[:, 0], data_1[:, 1], edgecolor="#333", alpha = 0.5)
+    plt.scatter(data_0[:, 0], data_0[:, 1], edgecolor="#333",  alpha = 0.5, s = markersize)
+    plt.scatter(data_1[:, 0], data_1[:, 1], edgecolor="#333", alpha = 0.5, s = markersize)
     plt.xlim(plotlim)
     plt.ylim(plotlim)
     ax = plt.gca()
     ax.set_aspect('equal')
+    plt.xlabel(r'$x_1$', fontsize=12)
+    plt.ylabel(r'$x_2$', fontsize=12)
+    if ticks == False:
+        ax.set_xticks([])
+        ax.set_yticks([])
+
     plt.savefig('trainingset.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
     plt.show()
     
