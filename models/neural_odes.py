@@ -364,9 +364,10 @@ class NeuralODE(nn.Module):
             self.traj = self.flow.trajectory(x, self.time_steps)
             pred = self.linear_layer(features)
             self.proj_traj = self.linear_layer(self.traj)
-            if not self.cross_entropy:
-                pred = self.non_linearity(pred)
-                self.proj_traj = self.non_linearity(self.proj_traj)
+            #this was active for a while and i am not sure why i thought this is good, without it the loss is smaller and the model more accurate
+            # if not self.cross_entropy:
+            #     pred = self.non_linearity(pred)
+            #     self.proj_traj = self.non_linearity(self.proj_traj)
         
         if return_features:
             return features, pred
