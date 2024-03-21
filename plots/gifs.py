@@ -70,7 +70,7 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
     else:
         #color = ['crimson' if targets[i, 0] > 0.0 else 'dodgerblue' for i in range(len(targets))]
         if len(targets.shape) > 1: #checks if labels are in form of scalars (for cross entropy) or vectors (for square loss)
-            color = ['C1' if targets[i,0] > 0.0 else 'C0' for i in range(len(targets))]
+            color = ['C1' if targets[i,1] > 0.0 else 'C0' for i in range(len(targets))]
         else:
             
             color = ['C1' if targets[i] > 0.0 else 'C0' for i in range(len(targets))]

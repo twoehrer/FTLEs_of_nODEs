@@ -623,7 +623,7 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
         return None, None
     
     if label == 'vector':
-        y = np.array([(2., 0.) if label == 1 else (-2., 0.) for label in y])
+        y = np.array([(0., -2.) if label == 1 else (0., 2.) for label in y])
 
     g = torch.Generator()
     g.manual_seed(random_state)
@@ -662,8 +662,8 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
         data_0 = X_train[y_train == 0]
         data_1 = X_train[y_train == 1]
     else:
-        data_0 = X_train[y_train[:,0] > 0]
-        data_1 = X_train[y_train[:,0] < 0]
+        data_0 = X_train[y_train[:,1] > 0]
+        data_1 = X_train[y_train[:,1] < 0]
     fig = plt.figure(figsize = (5,5), dpi = 100)
     plt.scatter(data_0[:, 0], data_0[:, 1], edgecolor="#333",  alpha = 0.5, s = markersize)
     plt.scatter(data_1[:, 0], data_1[:, 1], edgecolor="#333", alpha = 0.5, s = markersize)

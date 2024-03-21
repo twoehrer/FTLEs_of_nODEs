@@ -64,6 +64,9 @@ activations = {'tanh': nn.Tanh(),
 }
 architectures = {'inside': -1, 'outside': 0, 'bottleneck': 1}
 
+
+
+
 class Dynamics(nn.Module):
     """
     The nonlinear, right hand side $f(u(t), x(t)) of the neural ODE.
@@ -368,6 +371,46 @@ class NeuralODE(nn.Module):
             # if not self.cross_entropy:
             #     pred = self.non_linearity(pred)
             #     self.proj_traj = self.non_linearity(self.proj_traj)
+        
+        if return_features:
+            return features, pred
+        return pred, self.proj_traj
+    
+class NeuralODE_justflow(nn.Module):
+    """
+    In order to have the trajectories converge to the label vectors as attractors
+    no final linear layer or nonlinearity is added. The model is equal to the flow
+    """
+    def __init__(self, device, data_dim, hidden_dim, output_dim=2,
+                 augment_dim=0, non_linearity='tanh',
+                 tol=1e-3, adjoint=False, architecture='inside', 
+                 T=10, time_steps=10, 
+                 cross_entropy=True, fixed_projector=False):
+        super(NeuralODE_justflow, self).__init__()
+        self.device = device
+        self.data_dim = data_dim
+        self.hidden_dim = hidden_dim
+        self.augment_dim = augment_dim
+        if output_dim == 1 and cross_entropy: 
+            #output_dim = 1 pour MSE; >=2 pour cross entropy for binary classification.
+            raise ValueError('Incompatible output dimension with loss function.')
+        self.output_dim = output_dim
+        self.tol = tol
+        self.T = T
+        self.time_steps = time_steps
+        self.architecture = architecture
+        self.cross_entropy = cross_entropy
+        self.fixed_projector = fixed_projector
+    
+        dynamics = Dynamics(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.time_steps)
+        
+        self.flow = Semiflow(device, dynamics, tol, adjoint, T,  time_steps) #, self.adj_flow
+        
+    def forward(self, x, return_features=False):
+        
+        features = self.flow(x)
+        pred = features
+        self.proj_traj = self.flow.trajectory(x, self.time_steps)
         
         if return_features:
             return features, pred
