@@ -385,7 +385,7 @@ class NeuralODE_justflow(nn.Module):
                  augment_dim=0, non_linearity='tanh',
                  tol=1e-3, adjoint=False, architecture='inside', 
                  T=10, time_steps=10, 
-                 cross_entropy=True, fixed_projector=False):
+                 cross_entropy=True, fixed_projector=False, dynamics = False):
         super(NeuralODE_justflow, self).__init__()
         self.device = device
         self.data_dim = data_dim
@@ -402,7 +402,10 @@ class NeuralODE_justflow(nn.Module):
         self.cross_entropy = cross_entropy
         self.fixed_projector = fixed_projector
     
-        dynamics = Dynamics(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.time_steps)
+        if dynamics:
+            dynamics = dynamics
+        else:
+            dynamics = Dynamics(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.time_steps)
         
         self.flow = Semiflow(device, dynamics, tol, adjoint, T,  time_steps) #, self.adj_flow
         
