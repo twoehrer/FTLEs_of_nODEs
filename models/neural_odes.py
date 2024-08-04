@@ -183,76 +183,7 @@ class Dynamics_reduced(nn.Module):
 
 
 
-
-class adj_Dynamics(nn.Module):
-    """
-    Structure of the adjoint dynamics. given nODE dot(x(t)) = f(u(t), x(t)) gives structure for
-    dot(p(t)) = D_xf(u(t),x(t)) * p 
-    currently only sigma(W(t)x(t) + b(t)) architecture with tanh as non_linearity
-    """
-    def __init__(self, dynamics, x_traj, device, data_dim, hidden_dim, architecture='outside', augment_dim=0, non_linearity='tanh_prime', T=10, time_steps=10):
-                    
-        super(adj_Dynamics, self).__init__()
-        self.device = device
-
-        self.augment_dim = augment_dim
-        self.data_dim = data_dim
-        self.input_dim = data_dim
-        self.hidden_dim = hidden_dim
-        self.T = T
-
-        
-        
-
-        if non_linearity not in activations.keys() or architecture not in architectures.keys():
-            raise ValueError("Activation function or architecture not found. Please reconsider.")
-        
-        self.non_linearity = activations[non_linearity]
-        self.architecture = architecture
-        self.T = T
-        self.time_steps = time_steps
-   
-        self.non_linearity = activations[non_linearity]
-
-        self.f_dynamics = dynamics
-        self.x_traj = x_traj #traj
-            
-    def forward(self, t, p): #i need x at entry x[time_step - k - 1]
-        """
-        I need to pass the dynamics of f(u(t),.) and solution x(t) into the adjoint dynamics
-        The output of the class -> p mapsto -D_x f(x(T-t), u(T-t))*p where t is a number.
-        the adjoint goes backwards in time
-        """
-        time_steps = self.f_dynamics.time_steps
-        dt = self.T/time_steps
-        k = int(t/dt)
-
-        
-        #we need the backwards time weights
-        w_t = self.f_dynamics.fc2_time[time_steps - k - 1].weight 
-        b_t = self.f_dynamics.fc2_time[time_steps - k - 1].bias
-        x = self.x_traj[time_steps - k - 1]
-        #print('w_t',w_t.size(),'b_t', b_t.size(), 'x', x.size(), 'x_traj', self.x_traj.size(), 'p', p.size())
-         # calculation of -Dxg(u(t),x(t))p
-        out = torch.matmul(x, w_t.t()) + b_t  #this performs matrix vector multiplication for each k: w_t[k]*x
-        out = self.non_linearity(out)
-        out = torch.diag_embed(out)
-        out = torch.matmul(w_t.t(),out)  #this was not transposed before
-        p = p.unsqueeze(-1) #reshape to realize batch matrix vector multiplication as matrix matrix multiplication
-        out = -torch.matmul(out,p)
-        out = out.squeeze() #remove the reshaping
-
-       
-
-        # out = x.matmul(w_t.t())+b_t
-        # out = self.non_linearity(out) #this should have dimension d
-        # out = torch.diag(out) #this should make a diagonal d times d matrix out of it
-        # out = out.matmul(w_t.t()) #prime_simga matrix times weights
-        # out = - out.matmul(p) # -Dxf(u,x) * p .... p is the variable, x is fixed, we need to solve for p
-
-        
-        return out
-class Semiflow(nn.Module):  #this should allow to calculate the flow for dot(x) = f(u,x) AND dot(p) = -Dxf(u,x)p
+class Semiflow(nn.Module):
     """
     Given the dynamics f, generate the semiflow by solving x'(t) = f(u(t), x(t)).
     We concentrate on the forward Euler method - the user may change this by using
@@ -297,8 +228,6 @@ class Semiflow(nn.Module):  #this should allow to calculate the flow for dot(x) 
             out = odeint(self.dynamics, x_aug, integration_time, method='euler', options={'step_size': dt})
             # out = odeint(self.dynamics, x_aug, integration_time, method='dopri5', rtol = 0.1, atol = 0.1)
             
-            #i need to put the out into the odeint for the adj_out
-            # adj_out = odeint(self.adj_dynamics, torch.eye(x.shape[0]), torch.flip(integration_time,[0]), method='euler', options={'step_size': dt}) #this is new for the adjoint
             
         if eval_times is None:
             return out[1] 
@@ -464,16 +393,7 @@ class NeuralODEvar(nn.Module):
         
         features = self.flow(x)
 
-        if self.fixed_projector: #currently fixed_projector = fp
-            # import pickle
-            # with open('text.txt', 'rb') as fp:
-            #     projector = pickle.load(fp)
-            #     print(projector)
-            
-            # pred = features.matmul(projector[-2].t()) + projector[-1]
-            # pred = self.non_linearity(pred)
-            # self.proj_traj = self.flow.trajectory(x, self.time_steps)
-            # self.proj_traj = self.linear_layer(self.proj_traj)
+        if self.fixed_projector: 
             
             pred = features
             pred = self.non_linearity(pred)
@@ -485,9 +405,9 @@ class NeuralODEvar(nn.Module):
             self.traj = self.flow.trajectory(x, self.time_steps)
             pred = self.linear_layer(features)
             self.proj_traj = self.linear_layer(self.traj)
-            if not self.cross_entropy:
-                pred = self.non_linearity(pred)
-                self.proj_traj = self.non_linearity(self.proj_traj)
+            # if not self.cross_entropy:
+            #     pred = self.non_linearity(pred)
+            #     self.proj_traj = self.non_linearity(self.proj_traj)
         
         if return_features:
             return features, pred
