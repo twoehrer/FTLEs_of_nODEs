@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-@author: borjangeshkovski
+@author: tobiaswoehrer
 """
 ##------------#
 import matplotlib.pyplot as plt
