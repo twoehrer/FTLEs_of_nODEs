@@ -108,7 +108,7 @@ class Dynamics(nn.Module):
         
         """
         dt = self.T/self.time_steps   #here was no -1 before which does not fit with adjoint solver otherwise
-        k = int(t/dt)
+        k = int(t/dt - 0.0001) #without the -0.0001 i ran into the case that odeint wants to evaluate at final time T which does not have a k defined. int(-0.0001) = 0 so a negative number is not a problem
         
         if self.architecture < 1:
             w_t = self.fc2_time[k].weight
@@ -133,53 +133,53 @@ class Dynamics(nn.Module):
             out = torch.min(out1, out2)
             out = out.matmul(w2_t.t())
         return out
-
-
-class Dynamics_reduced(nn.Module):
+    
+    
+class Dynamics_with_layers(nn.Module):
     """
     The nonlinear, right hand side $f(u(t), x(t)) of the neural ODE.
+    We distinguish the different structures defined in the dictionary "architectures" just above.
     """
     def __init__(self, device, data_dim, hidden_dim, augment_dim=0, 
-                non_linearity='tanh', architecture='inside', T=10, time_steps=10):
-        super(Dynamics_reduced, self).__init__()
+                non_linearity='tanh', T=10, layers_hidden = 4):
+        super(Dynamics_with_layers, self).__init__()
         self.device = device
         self.augment_dim = augment_dim
         self.data_dim = data_dim
         self.input_dim = data_dim + augment_dim
         self.hidden_dim = hidden_dim
 
-        if non_linearity not in activations.keys() or architecture not in architectures.keys():
-            raise ValueError("Activation function or architecture not found. Please reconsider.")
+        if non_linearity not in activations.keys():
+            raise ValueError("Activation function not found. Please reconsider.")
         
         self.non_linearity = activations[non_linearity]
-        self.architecture = architectures[architecture]
         self.T = T
-        self.time_steps = time_steps
+        self.layers_hidden = layers_hidden
         
-        self.weights = nn.ParameterList([nn.Parameter(torch.randn(self.input_dim)) for _ in range(self.time_steps)])
-        self.bias = nn.ParameterList([nn.Parameter(torch.randn(self.input_dim)) for _ in range(self.time_steps)])
-        # self.outer_weights = nn.ParameterList([nn.Parameter(torch.randn(self.input_dim)) for _ in range(self.time_steps)])
-    
+
+        ##-- R^{d_aug} -> R^{d_hid} layer -- 
+        
+        self.fc1 = nn.Linear(self.input_dim, hidden_dim)
+        ##-- R^{d_hid} -> R^{d_aug} layer --
+        blocks_hidden = [nn.Linear(self.hidden_dim, self.hidden_dim) for _ in range(self.layers_hidden)]
+        self.fc2 = nn.Sequential(*blocks_hidden)
+        self.fc3 = nn.Linear(self.hidden_dim, self.input_dim)
+
+        
     def forward(self, t, x):
         """
         The output of the class -> f(x(t), u(t)).
+        f(x(t), u(t)) = f(x,u^k)
+        
         """
-        dt = self.T/self.time_steps
-        k = int(t/dt)
-        
-        weights_k = self.weights[k]
-        bias_k = self.bias[k]
-        # outer_weights_k = self.outer_weights[k]    
-        
-        weights_k = weights_k[None, :]  # Shape: (1, input_dim)
-        bias_k = bias_k[None, :]  # Shape: (1, input_dim)
-        # outer_weights_k = outer_weights_k[None, :]  # Shape: (1, input_dim)
-            
-        inner_product = torch.matmul(x, weights_k.t()) + bias_k  # Shape: (batch_size, input_dim)
-        # layer_output = outer_weights_k * self.non_linearity(inner_product)  # Shape: (batch_size, input_dim)
-        layer_output = self.non_linearity(inner_product)  # Shape: (batch_size, input_dim)
-
-        return layer_output
+        out = self.fc1(x)
+        out = self.non_linearity(out)
+        for k in range(self.layers_hidden):
+            out = self.fc2(out)
+            out = self.non_linearity(out)
+        out = self.fc3(out)
+        return out
+    
 
 
 
@@ -254,7 +254,7 @@ class NeuralODE(nn.Module):
                  augment_dim=0, non_linearity='tanh',
                  tol=1e-3, adjoint=False, architecture='inside', 
                  T=10, time_steps=10, 
-                 cross_entropy=True, fixed_projector=False, reduced_dynamics = False):
+                 cross_entropy=True, fixed_projector=False, reduced_dynamics = False, layers_hidden = 0):
         super(NeuralODE, self).__init__()
         self.device = device
         self.data_dim = data_dim
@@ -270,10 +270,13 @@ class NeuralODE(nn.Module):
         self.architecture = architecture
         self.cross_entropy = cross_entropy
         self.fixed_projector = fixed_projector
-        if reduced_dynamics:
-            dynamics = Dynamics_reduced(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.time_steps)
-        else:
+        # if reduced_dynamics:
+        #     dynamics = Dynamics_reduced(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.time_steps)
+        if layers_hidden > 0:
+            dynamics = Dynamics_with_layers(device, data_dim, hidden_dim, augment_dim, non_linearity, self.T, layers_hidden = layers_hidden)
+        else: 
             dynamics = Dynamics(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.time_steps)
+        
         
         self.flow = Semiflow(device, dynamics, tol, adjoint, T,  time_steps) #, self.adj_flow
         self.linear_layer = nn.Linear(self.flow.dynamics.input_dim,
@@ -364,7 +367,7 @@ class NeuralODEvar(nn.Module):
                  augment_dim=0, non_linearity='tanh',
                  tol=1e-3, adjoint=False, architecture='inside', 
                  T=10, time_steps=10, num_params = 5,
-                 cross_entropy=True, fixed_projector=False):
+                 cross_entropy=True, fixed_projector=False, layers_hidden = 0):
         super(NeuralODEvar, self).__init__()
         self.device = device
         self.data_dim = data_dim
@@ -381,8 +384,11 @@ class NeuralODEvar(nn.Module):
         self.architecture = architecture
         self.cross_entropy = cross_entropy
         self.fixed_projector = fixed_projector
-
-        dynamics = Dynamics(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.num_params)
+        if layers_hidden > 0:
+            dynamics = Dynamics_with_layers(device, data_dim, hidden_dim, augment_dim, non_linearity, self.T, layers_hidden = layers_hidden)
+            print('hidden layers found')
+        else:
+            dynamics = Dynamics(device, data_dim, hidden_dim, augment_dim, non_linearity, architecture, self.T, self.num_params)
         
         self.flow = Semiflow(device, dynamics, tol, adjoint, T,  time_steps) #, self.adj_flow
         self.linear_layer = nn.Linear(self.flow.dynamics.input_dim,
