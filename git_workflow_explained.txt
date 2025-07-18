@@ -1,0 +1,15 @@
+workflow for git
+
+Problem: Jupyter notebook outputs have large images which cannot be uploaded to github
+Current solution Tobi: Have local branch 'Tobi_local' that commits images in output, but strip image outputs without before committing them to Tobi branch that can be uploaded to github.
+Current solution Elena: Convert jupyter notebooks to .py files and only sync .py files to Github. Ignore .ipynb files.
+
+Git workflow idea with Elena:I have jupyter notebook files with images in it in my tobi_local branch
+
+When i want to commit to the online version i want to first strip the pictures away for that i do
+generate a new branch stripped_temp
+in this branch i use the command
+find . -name "*.ipynb" | xargs nbstripout  
+then i want to only merge this last command to the tobi branch
+for that i need to figure out how to do this. maybe with merge —squash?
+then i only have the stripped version on the tobi branch online. while i remain to have the pictures in tobi_local.
