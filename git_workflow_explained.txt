@@ -13,4 +13,3 @@ find . -name "*.ipynb" | xargs nbstripout
 then i want to only merge this last command to the tobi branch
 for that i need to figure out how to do this. maybe with merge —squash?
 then i only have the stripped version on the tobi branch online. while i remain to have the pictures in tobi_local.
-
