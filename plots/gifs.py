@@ -49,7 +49,7 @@ def evo_gif(trainer, num_epochs, plotfreq, subfolder, filename, title_left = 'le
 
 
 def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
-                   alpha_line=1, filename='trajectory.gif', axlim = 0, ticks = True):
+                   alpha_line=1, filename='trajectory', axlim = 0, ticks = True):
     
     from matplotlib import rc
     from scipy.interpolate import interp1d
@@ -57,9 +57,8 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
     font = {'size'   : 18}
     rc('font', **font)
 
-    if not filename.endswith(".gif"):
-        raise RuntimeError("Name must end in with .gif, but ends with {}".format(filename))
-    base_filename = filename[:-4]
+    
+    base_filename = filename
     
     
         
@@ -192,7 +191,7 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
         img_file = base_filename + "{}.png".format(i)
         imgs.append(imageio.imread(img_file))
         if i not in [0, interp_time//5, interp_time//2, interp_time-1]: os.remove(img_file) 
-    imageio.mimwrite(filename, imgs, fps = 2)
+    imageio.mimwrite(filename + '.gif', imgs, fps = 2)
     
     
 

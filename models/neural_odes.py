@@ -384,7 +384,7 @@ class NeuralODEvar(nn.Module):
         self.architecture = architecture
         self.cross_entropy = cross_entropy
         self.fixed_projector = fixed_projector
-        if layers_hidden > 0:
+        if layers_hidden > 0: #if the right hand side has higher dimensional parameters in form of hidden layers (these are not discretization layers but right hand side function layers)
             dynamics = Dynamics_with_layers(device, data_dim, hidden_dim, augment_dim, non_linearity, self.T, layers_hidden = layers_hidden)
             print('hidden layers found')
         else:
@@ -418,6 +418,13 @@ class NeuralODEvar(nn.Module):
         if return_features:
             return features, pred
         return pred, self.proj_traj
+    
+    def footnote(self) -> str:
+        return (f"num_params={self.num_params}, time steps={self.time_steps}, "
+                f"nonlin={self.non_linearity}, cross_e={self.cross_entropy}, "
+                f"arch={self.architecture}, "
+                f"hidden_dim={self.hidden_dim}, "
+                f"output_dim={self.output_dim}, layers_hidden={self.layers_hidden}")
         
 
 class robNeuralODE(nn.Module):

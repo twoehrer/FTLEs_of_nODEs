@@ -188,7 +188,7 @@ class doublebackTrainer():
     """
     def __init__(self, model, optimizer, device, cross_entropy=True,
                  print_freq=10, record_freq=10, verbose=True, save_dir=None, 
-                 turnpike=True, bound=0., fixed_projector=False, eps = 0.01, l2_factor = 0, eps_comp = 0., db_type = 'l1'):
+                 turnpike=True, bound=0., fixed_projector=False, eps = 0, l2_factor = 0, eps_comp = 0., db_type = 'l2'):
         self.model = model
         self.optimizer = optimizer
         self.cross_entropy = cross_entropy
@@ -590,7 +590,7 @@ class epsTrainer():
                                              ## Classical empirical risk minimization
                 
 
-def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2], label = 'scalar', ticks = True, markersize = 50):
+def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2], label = 'scalar', ticks = True, markersize = 50, filename = 'trainingset'):
     label_types = ['scalar', 'vector']
     if label not in label_types:
         raise ValueError("Invalid label type. Expected one of: %s" % label_types)
@@ -677,7 +677,7 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
         ax.set_xticks([])
         ax.set_yticks([])
 
-    plt.savefig('trainingset.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
+    plt.savefig(filename + '.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
     plt.show()
     
     return train, test

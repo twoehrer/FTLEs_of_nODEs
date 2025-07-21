@@ -18,6 +18,51 @@ import imageio
 from matplotlib.colors import LinearSegmentedColormap
 import os
 
+
+
+def plot_trajectory(model, inputs, targets, stepsize, time_interval = None, dpi=200, alpha=0.9,
+                    alpha_line=0.9, x_lim = [-2,2], y_lim = [-2,2], show = True):
+    """
+    This function plots the trajectories of the inputs in the model's flow field. It is used as a visusalizetion tool for the model's behavior to make sure the subintervals and stepsizes are as expected to generate the gifs.
+    """
+    from matplotlib import rc
+    rc("text", usetex=False)
+    font = {'size': 18}
+    rc('font', **font)
+
+    # Define color based on targets
+
+    color = ['C1' if targets[i,1] > 0.0 else 'C0' for i in range(len(targets))]
+        
+    
+    
+    if time_interval is None:
+        time_interval = torch.tensor([0, model.T],dtype=torch.float32)
+        
+    start_time = time_interval[0].item()
+    end_time = time_interval[1].item()
+    num_steps_interval = int((end_time - start_time) / stepsize)
+    # print('amount steps', num_steps_interval)
+    integration_time = torch.arange(start_time, end_time + stepsize/100, stepsize) #using end_time + stepsize gave a weird inconsistency between including and excluding the step_size
+    # print(integration_time)
+    trajectories = model.flow(inputs, integration_time).detach() #output is of dimension [time_steps, number of inputs, dimension per input]
+
+    
+    for i in range(inputs.shape[0]):
+        plt.plot(trajectories[:,i, 0], trajectories[:,i, 1], linestyle='-', marker='', color = color[i], alpha = alpha_line, linewidth = 0.5)
+        
+    
+    x_min, x_max = x_lim[0], x_lim[1]
+    y_min, y_max = y_lim[0], y_lim[1]
+    plt.xlim(x_min, x_max)
+    plt.ylim(y_min, y_max)
+    
+    
+    
+    if show:
+        plt.show()
+
+
 @torch.no_grad()
 def visualize_classification(model, data, label, grad = None, fig_name=None, footnote=None, contour = True, x1lims = [-2, 2], x2lims = [-2, 2]):
     

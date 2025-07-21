@@ -54,6 +54,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+*.pyc
 
 # Translations
 *.mo
@@ -144,3 +145,4 @@ cython_debug/
 .directory
 
 .DS_Store
+models/__pycache__/neural_odes.cpython-38.pyc
