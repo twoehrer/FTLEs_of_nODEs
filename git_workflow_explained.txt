@@ -13,3 +13,13 @@ find . -name "*.ipynb" | xargs nbstripout
 then i want to only merge this last command to the tobi branch
 for that i need to figure out how to do this. maybe with merge —squash?
 then i only have the stripped version on the tobi branch online. while i remain to have the pictures in tobi_local.
+
+###Terminal commands###
+git checkout -b Tobi_stripped_temp
+find . -name "*.ipynb" | xargs nbstripout
+git commit -am "Temporary clean version for push"
+git checkout Tobi
+git merge --squash Tobi_stripped_temp
+git branch -D Tobi_stripped_temp
+git checkout Tobi_local
+

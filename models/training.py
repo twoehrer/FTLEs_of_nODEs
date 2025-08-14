@@ -188,7 +188,7 @@ class doublebackTrainer():
     """
     def __init__(self, model, optimizer, device, cross_entropy=True,
                  print_freq=10, record_freq=10, verbose=True, save_dir=None, 
-                 turnpike=True, bound=0., fixed_projector=False, eps = 0, l2_factor = 0, eps_comp = 0., db_type = 'l2'):
+                 turnpike=True, bound=0., fixed_projector=False, eps = 0, l2_factor = 0., eps_comp = 0., db_type = 'l2'):
         self.model = model
         self.optimizer = optimizer
         self.cross_entropy = cross_entropy
@@ -587,58 +587,88 @@ class epsTrainer():
         
                 
 
-                                             ## Classical empirical risk minimization
+                                             ## Classical empirical risk minimization 
                 
 
-def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2], label = 'scalar', ticks = True, markersize = 50, filename = 'trainingset'):
+def create_dataloader(data_type, num_points = 3000, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2], cross_entropy = False, label = 'scalar', ticks = True, markersize = 50, filename = 'trainingset'):
+    
+    from sklearn.model_selection import train_test_split
+    from sklearn.datasets import make_moons, make_circles, make_blobs
+    from sklearn.preprocessing import StandardScaler
+    import matplotlib.pyplot as plt
+    from torch.utils import data as data
+    from torch.utils.data import DataLoader, TensorDataset
+    
     label_types = ['scalar', 'vector']
     if label not in label_types:
         raise ValueError("Invalid label type. Expected one of: %s" % label_types)
     
-    
     if data_type == 'circles':
-        X, y = make_circles(batch_size, noise=noise, factor=factor, random_state=random_state, shuffle = shuffle)
+        X, y = make_circles(num_points, noise=noise, factor=factor, random_state=random_state, shuffle = shuffle)
 
-
-        
     elif data_type == 'blobs':
         centers = [[-1, -1], [1, 1]]
         X, y = make_blobs(
-    n_samples=batch_size, centers=centers, cluster_std=noise, random_state=random_state)
-        
-        
+    n_samples=num_points, centers=centers, cluster_std=noise, random_state=random_state)
+           
     elif data_type == 'moons':
-        X, y = make_moons(batch_size, noise = noise, shuffle = shuffle , random_state = random_state)
-    
+        X, y = make_moons(num_points, noise = noise, shuffle = shuffle , random_state = random_state)
     
     elif data_type == 'xor':
-        X = torch.randint(low=0, high=2, size=(batch_size, 2), dtype=torch.float32)
+        X = torch.randint(low=0, high=2, size=(num_points, 2), dtype=torch.float32)
         y = np.logical_xor(X[:, 0] > 0, X[:, 1] > 0).float()
         # y = y.to(torch.int64)
         X += noise * torch.randn(X.shape)
-        
         
     else: 
         print('datatype not supported')
         return None, None
     
+    
+    #Split the data into training and test set
+    X = StandardScaler().fit_transform(X)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=.2, random_state=random_state, shuffle = shuffle)
+    
+    # for plotting purposes
+    data_0 = X_train[y_train == 0]
+    data_1 = X_train[y_train == 1]
+    
+    plt.figure(figsize = (5,5), dpi = 100)
+    plt.scatter(data_1[:, 0], data_1[:, 1], edgecolor="#333", alpha = 0.5, s = markersize)
+    plt.scatter(data_0[:, 0], data_0[:, 1], edgecolor="#333",  alpha = 0.5, s = markersize)
+    plt.xlim(plotlim)
+    plt.ylim(plotlim)
+    ax = plt.gca()
+    ax.set_aspect('equal')
+    plt.xlabel(r'$x_1$', fontsize=12)
+    plt.ylabel(r'$x_2$', fontsize=12)
+    if ticks == False:
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    plt.savefig(filename + '.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
+    plt.show()
+    
+    
     if label == 'vector':
-        y = np.array([(0., -2.) if label == 1 else (0., 2.) for label in y])
+        y_train = np.array([(0., -2.) if label == 1 else (0., 2.) for label in y_train])
+        y_test = np.array([(0., -2.) if label == 1 else (0., 2.) for label in y_test])
+    
+    if label == 'scalar' and cross_entropy == False:
+        y_train = np.array([1. if label == 1 else -1. for label in y_train])[:,None]  # unsqueeze to make it a 2D tensor for MSE
+        y_test = np.array([1. if label == 1 else -1. for label in y_test])[:,None]  
 
     g = torch.Generator()
     g.manual_seed(random_state)
     
-    X = StandardScaler().fit_transform(X)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=.2, random_state=random_state, shuffle = shuffle)
-
+    # Convert to torch tensors
     X_train = torch.Tensor(X_train) # transform to torch tensor for dataloader
     y_train = torch.Tensor(y_train) #transform to torch tensor for dataloader
 
     X_test = torch.Tensor(X_test) # transform to torch tensor for dataloader
     y_test = torch.Tensor(y_test) #transform to torch tensor for dataloader
 
-
-    if label == 'scalar':
+    if cross_entropy == True:
         X_train = X_train.type(torch.float32)  #type of orginial pickle.load data
         y_train = y_train.type(torch.int64) #dtype of original picle.load data
 
@@ -658,26 +688,6 @@ def create_dataloader(data_type, batch_size = 3000, noise = 0.15, factor = 0.15,
 
     train = DataLoader(train_data, batch_size=64, shuffle=shuffle, generator=g)
     test = DataLoader(test_data, batch_size=256, shuffle=shuffle, generator = g) #128 before
-    if label == 'scalar':
-        data_0 = X_train[y_train == 0]
-        data_1 = X_train[y_train == 1]
-    else:
-        data_0 = X_train[y_train[:,1] > 0]
-        data_1 = X_train[y_train[:,1] < 0]
-    fig = plt.figure(figsize = (5,5), dpi = 100)
-    plt.scatter(data_0[:, 0], data_0[:, 1], edgecolor="#333",  alpha = 0.5, s = markersize)
-    plt.scatter(data_1[:, 0], data_1[:, 1], edgecolor="#333", alpha = 0.5, s = markersize)
-    plt.xlim(plotlim)
-    plt.ylim(plotlim)
-    ax = plt.gca()
-    ax.set_aspect('equal')
-    plt.xlabel(r'$x_1$', fontsize=12)
-    plt.ylabel(r'$x_2$', fontsize=12)
-    if ticks == False:
-        ax.set_xticks([])
-        ax.set_yticks([])
 
-    plt.savefig(filename + '.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
-    plt.show()
-    
+
     return train, test

@@ -19,7 +19,7 @@ def LEs(input, node, time_interval = torch.tensor([0, 10], dtype=torch.float32))
     J = torch.autograd.functional.jacobian(input_to_output_lambda, input)
     
     # Perform Singular Value Decomposition
-    U, S, V = torch.svd(J)
+    _, S, _ = torch.svd(J)
     
     # Return the maximum singular value
     return 1/(time_interval[1]-time_interval[0]) * np.log(S)

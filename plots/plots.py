@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-@author: tobiaswoehrer
+@author: tobias woehrer
 """
 ##------------#
 import matplotlib.pyplot as plt
@@ -18,6 +18,235 @@ import imageio
 from matplotlib.colors import LinearSegmentedColormap
 import os
 
+import sys
+
+# Add the parent directory of plots.py to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def create_gif_shrinkingintervals(model, le_density = 30, point_density = 20, filename = 'LE_shrinking'):
+    """
+    Creates a GIF showing the evolution of input points and the future Lyapunov exponents. As the time progresses, the remaining Lyapunov exponent intervals shrink, reflecting the model's dynamics.
+    
+    Parameters:
+    - model: The neural ODE model.
+    - le_amount: Number of Lyapunov exponent intervals.
+    - point_density: Number of vector field points.
+    - filename: Base name for the output files.
+    """
+    import io
+    from FTLE import LE_grid
+
+    ###point plot preparation####
+    # Define the grid for vector field visualization
+    x = torch.linspace(-2,2,point_density)
+    y = torch.linspace(-2,2,point_density)
+    X, Y = torch.meshgrid(x, y)
+    inputs_grid = torch.stack([X,Y], dim=-1)
+    inputs_grid = inputs_grid.view(-1,2) #to be able to input all the grid values into the model at once
+
+    #compute traj and colors of grid inputs first, later no more evaluations of model needed
+    trajs, colors = input_to_traj_and_color(model, inputs_grid)
+
+    
+    T = model.T
+    step_size = T/model.time_steps #time step for the integration
+    eps = 0.1 * step_size #this should make sure we stay inside an interval with constant parameters for the integration
+    t_values = np.arange(0 + eps, T-step_size, step_size) #all discretization steps computed in the nODE flow
+    
+    images = []
+    
+    for t in t_values:
+    
+        ###FTLE plot
+        le_interval = torch.tensor([t, T], dtype=torch.float32)
+
+        output_max, _ = LE_grid(model, le_density, le_interval)
+        plt.imshow(np.rot90(output_max), origin='upper', extent=(-2, 2, -2, 2), cmap='viridis')
+        cbar = plt.colorbar()
+        cbar.ax.tick_params(labelsize=10)  # Adjust tick label size
+        
+        ### Plot points from trajectory
+        plot_points_from_traj(trajs, colors, model, t) #this + step_size here does not make sense yet must still be explained.
+        
+        plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
+        plt.xlim(-2, 2)
+        plt.ylim(-2, 2)
+        plt.xlabel(r"$x_1$", fontsize=5)
+        plt.ylabel(r"$x_2$", fontsize=5)
+        plt.tick_params(axis='both', which='major', labelsize=5)
+        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ', fontsize = 7)
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, bbox_inches='tight', dpi=200, format='png', facecolor='white')
+        buf.seek(0)  # rewind to beginning of buffer
+        images.append(imageio.imread(buf))  # or use PIL.Image.open(buf)
+        buf.close()
+        plt.close()
+        print(f'Saved plot for t={t:.1f}')
+    
+    imageio.mimsave(filename + '.gif', images, fps=4)
+
+
+
+
+def create_gif_subintervals(model, le_density = 30, vf_density = 20, filename = 'LE_per_param'):
+    """
+    Creates a GIF showing the finite-time Lyapunov exponents for each parameter subinterval.
+    
+    Parameters:
+    - model: The neural ODE model.
+    - le_amount: Number of Lyapunov exponent intervals.
+    - vf_amount: Number of vector field points.
+    - filename: Base name for the output files.
+    """
+    import io
+    from FTLE import LE_grid
+
+
+    ###point plot preparation####
+    # Define the grid for vector field visualization
+    x = torch.linspace(-2,2,vf_density)
+    y = torch.linspace(-2,2,vf_density)
+    X, Y = torch.meshgrid(x, y)
+    inputs_grid = torch.stack([X,Y], dim=-1)
+    inputs_grid = inputs_grid.view(-1,2) #to be able to input all the grid values into the model at once
+
+    #compute traj and colors of grid inputs first, later no more evaluations of model needed
+    trajs, colors = input_to_traj_and_color(model, inputs_grid)
+
+    
+    T = model.T
+    step_size = T/model.time_steps #time step for the integration
+    param_subinterval_len = model.T/model.num_params #time interval has length of the time_steps and the subinterval of constant param has the same length
+    eps = 0.1 * step_size #this should make sure we stay inside an interval with constant parameters for the integration
+    t_values = np.arange(0 + eps, T-step_size, step_size) #all discretization steps computed in the nODE flow
+    
+    images = []
+    k_running = -1
+    for t in t_values:
+        
+        ###FTLE plot
+        k = int(t // param_subinterval_len) #which parameter interval we are in
+        le_interval = torch.tensor([0, param_subinterval_len], dtype=torch.float32) + k * param_subinterval_len #the time interval for the FTLE computation
+        if k != k_running: #only recompute the FTLE if the parameter interval changed
+            k_running = k
+            print(f'k = {k}, t = {t:.2f}')
+            output_max, _ = LE_grid(model, le_density, le_interval)
+            
+        plt.imshow(np.rot90(output_max), origin='upper', extent=(-2, 2, -2, 2), cmap='viridis')
+        cbar = plt.colorbar()
+        cbar.ax.tick_params(labelsize=10)  # Adjust tick label size
+        
+        ### Plot vector field and points from trajectory
+        plot_vectorfield(model, t , inputs_grid)
+        plot_points_from_traj(trajs, colors, model, t + step_size) #this + step_size here does not make sense yet must still be explained.
+        
+        plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
+        plt.xlim(-2, 2)
+        plt.ylim(-2, 2)
+        plt.xlabel(r"$x_1$", fontsize=5)
+        plt.ylabel(r"$x_2$", fontsize=5)
+        plt.tick_params(axis='both', which='major', labelsize=5)
+        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ', fontsize = 7)
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, bbox_inches='tight', dpi=200, format='png', facecolor='white')
+        buf.seek(0)  # rewind to beginning of buffer
+        images.append(imageio.imread(buf))  # or use PIL.Image.open(buf)
+        buf.close()
+        plt.close()
+        print(f'Saved plot for t={t:.1f}')
+    
+    imageio.mimsave(filename + '.gif', images, fps=4)
+
+def input_to_traj_and_color(model, inputs):
+    """
+    Computes the trajectory of the inputs through the model and colors them based on the model's predictions. Only requires one input to output call of the model.
+    """
+    model_preds, _ = model(inputs)
+    if model.output_dim == 1:
+                model_preds = model_preds.squeeze(-1)                   # (N,)
+                model_preds = torch.clamp((model_preds + 1) / 2, 0.0, 1.0)
+    else:
+        m = nn.Softmax()
+        model_preds = m(model_preds)
+        model_preds = model_preds[:,0]
+    model_preds = (model_preds > 0.5).long()
+
+    # colors = ['C1' if model_preds[i] == 1 else 'C0' for i in range(len(model_preds))]
+    
+    colors = ['#ff7f0e' if model_preds[i] == 0 else '#1f77b4' for i in range(len(model_preds))]
+
+    traj = model.traj.detach().numpy() #the trajectories from the last model call is stored in the anode.
+    
+    return traj, colors
+
+def plot_points_from_traj(trajs, colors, model, time):
+    """
+    based on trajectories and corresponding pred color of the model, this function plots the points at a given time.
+    model is only needed for the time step and the number of time steps.
+    """
+    
+    step_size = model.T/ model.time_steps #the step size is the time interval divided by the number of time steps.
+    index = int(time // step_size) #get the index of the time that is requested. if it is not an integer, it will return the floor value. This can lead to rounding errors. An easy fix can be to add a small epislon to the time value.
+    plt.scatter(trajs[index, :, 0], trajs[index, :, 1], marker='o', s = 10, color = colors, linewidth=0.65, edgecolors='black', alpha = 1)
+
+    
+    
+
+def plot_points(model, inputs, targets_dummy, time_interval = None, dpi=200, alpha=0.9,
+                    alpha_line=0.9, x_lim = [-2,2], y_lim = [-2,2]):
+    #targets_dummy is a dummy variable to have the unchanged input for old files. should be removed once the update works.
+    from matplotlib import rc
+    rc("text", usetex=False)
+    font = {'size': 18}
+    rc('font', **font)
+    
+    
+    preds, _ = model(inputs)
+    m = nn.Softmax() #needs to be modified if used with model that already has a softmax layer
+    preds = m(preds)
+    preds = preds[:,0]
+    targets = (preds > 0.5).long()
+
+
+    # Define color based on targets
+
+    color = ['C1' if targets[i] == 1 else 'C0' for i in range(len(targets))]
+        
+    
+    
+    if time_interval is None:
+        time_interval = torch.tensor([0, model.T],dtype=torch.float32)
+        
+    
+    trajectories = model.flow(inputs, time_interval).detach() #output is of dimension [time_steps, number of inputs, dimension per input]
+
+    
+    for i in range(inputs.shape[0]):
+        plt.scatter(trajectories[-1,i, 0], trajectories[-1,i, 1], marker='o', s = 10, color = color[i],linewidth=0.65, edgecolors='black', alpha = alpha)
+        
+    
+    x_min, x_max = x_lim[0], x_lim[1]
+    y_min, y_max = y_lim[0], y_lim[1]
+    plt.xlim(x_min, x_max)
+    plt.ylim(y_min, y_max)
+
+def plot_vectorfield(anode, t, inputs, show = False):
+    
+    
+    vectorfield_grid = anode.flow.dynamics(t, inputs)
+    x_inputs = inputs[..., 0].detach().numpy()
+    y_inputs = inputs[..., 1].detach().numpy()
+
+    x_vf = vectorfield_grid[:, 0].detach().numpy()
+    y_vf = vectorfield_grid[:, 1].detach().numpy()
+    plt.quiver(x_inputs,y_inputs, x_vf, y_vf, color = 'black', width=0.002, alpha = 0.5)#, alpha = 0.8, headlength=1, headaxislength=2, scale=25, width=0.003)
+    if show:
+        # plt.xlim(-2, 2)
+        # plt.ylim(-2, 2)
+        # plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
+        plt.show()
 
 
 def plot_trajectory(model, inputs, targets, stepsize, time_interval = None, dpi=200, alpha=0.9,
@@ -159,7 +388,7 @@ def classification_levelsets(model, fig_name=None, footnote=None, contour = True
     
     plt.ylabel(r"$x_2$")
     plt.xlabel(r"$x_1$")
-    plt.figtext(0.5, 0, footnote, ha="center", fontsize=10)
+    plt.figtext(0.5, -0.02, footnote, ha="center", fontsize=9)
 
     
    
@@ -167,19 +396,33 @@ def classification_levelsets(model, fig_name=None, footnote=None, contour = True
 
     x1 = torch.arange(x1lower, x1upper, step=0.01, device=device)
     x2 = torch.arange(x2lower, x2upper, step=0.01, device=device)
-    xx1, xx2 = torch.meshgrid(x1, x2)  # Meshgrid function as in numpy
+    xx1, xx2  = torch.meshgrid(x1, x2)  # Meshgrid function as in numpy should emulate indexing='xy'
     model_inputs = torch.stack([xx1, xx2], dim=-1)
     
     preds, _ = model(model_inputs)
+    print('shape preds', preds.shape)
+    if model.output_dim == 1 and model.cross_entropy == False:
+        Z = preds.squeeze()  # normalizes the model predictions to probabilities
+        Z = torch.clamp((Z + 1)/2, 0.0, 1.0) #normalizes the output trained with MSE to probabilities between 0 and 1
+        print('shape Z', Z.shape)
+    else:
+        Z = preds.softmax(dim=-1)[..., 0]    # (len_x2, len_x1)
+        print('shape Z', Z.shape)
+
+# Convert for matplotlib
+    X = xx1.detach().cpu().numpy()
+    Y = xx2.detach().cpu().numpy()
+    Z = Z.detach().cpu().numpy()
     
-    # dim = 2 means that it normalizes along the last dimension, i.e. along the two predictions that are the model output
-    m = nn.Softmax(dim=2)
-    # softmax normalizes the model predictions to probabilities
-    preds = m(preds)
+    print('shape check:',X.shape == Y.shape == Z.shape)
+    
+    # # dim = 2 means that it normalizes along the last dimension, i.e. along the two predictions that are the model output
+    # m = nn.Softmax(dim=2)
+    # # softmax normalizes the model predictions to probabilities
+    # preds = m(preds)
 
     #we only need the probability for being in class1 (as prob for class2 is then 1- class1)
-    preds = preds[:, :, 0]
-    preds = preds.unsqueeze(2)  # adds a tensor dimension at position 2
+   
     
     plt.grid(False)
     plt.xlim([x1lower, x1upper])
@@ -192,13 +435,14 @@ def classification_levelsets(model, fig_name=None, footnote=None, contour = True
         colors = [to_rgb("C1"), [1, 1, 1], to_rgb("C0")] # first color is orange, last is blue
         cm = LinearSegmentedColormap.from_list(
             "Custom", colors, N=40)
-        z = np.array(preds).reshape(xx1.shape)
+       
         
         levels = np.linspace(0.,1.,8).tolist()
         
-        cont = plt.contourf(xx1, xx2, z, levels, alpha=1, cmap=cm, zorder = 0, extent=(x1lower, x1upper, x2lower, x2upper)) #plt.get_cmap('coolwarm')
+        cont = plt.contourf(X, Y, Z, levels, alpha=1, cmap=cm, zorder = 0) #plt.get_cmap('coolwarm')
         cbar = fig.colorbar(cont, fraction=0.046, pad=0.04)
         cbar.ax.set_ylabel('prediction prob.')
+        
     
 
     if fig_name:

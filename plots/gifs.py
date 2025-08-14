@@ -68,11 +68,12 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
         color = ['mediumpurple' if targets[i] == 2.0 else 'gold' if targets[i] == 0.0 else 'mediumseagreen' for i in range(len(targets))]
     else:
         #color = ['crimson' if targets[i, 0] > 0.0 else 'dodgerblue' for i in range(len(targets))]
-        if len(targets.shape) > 1: #checks if labels are in form of scalars (for cross entropy) or vectors (for square loss)
+        if len(targets.shape) > 1 and model.cross_entropy == True: #checks if labels are in form of scalars (for cross entropy) or vectors (for square loss)
+            color = ['C0' if targets[i,1] > 0.0 else 'C1' for i in range(len(targets))]
+        elif model.output_dim > 1 and model.cross_entropy == False: #checks if labels are in form of scalars (for cross entropy) or vectors (for square loss)
             color = ['C1' if targets[i,1] > 0.0 else 'C0' for i in range(len(targets))]
         else:
-            
-            color = ['C1' if targets[i] > 0.0 else 'C0' for i in range(len(targets))]
+            color = ['C0' if targets[i] > 0.0 else 'C1' for i in range(len(targets))]
 
     trajectories = model.flow.trajectory(inputs, timesteps).detach()
     num_dims = trajectories.shape[2]
@@ -191,7 +192,7 @@ def trajectory_gif(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
         img_file = base_filename + "{}.png".format(i)
         imgs.append(imageio.imread(img_file))
         if i not in [0, interp_time//5, interp_time//2, interp_time-1]: os.remove(img_file) 
-    imageio.mimwrite(filename + '.gif', imgs, fps = 2)
+    imageio.mimwrite(filename + '.gif', imgs, fps = 4)
     
     
 
