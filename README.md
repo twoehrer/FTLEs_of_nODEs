@@ -20,10 +20,10 @@ The code implements finite time Lyapunov exponents (FTLE) for low-dimensional ne
 ### FTLE Dynamics Visualized
 
 <p align="center">
-  <b>Phase Space Evolution</b><br>
+  <b>Lyapunov exponents for non-autonomous nODE</b><br>
   <img src="https://github.com/user-attachments/assets/fa34d00a-376f-417e-9284-dcb0f1cf0cec" width="400" />
   <br><br>
-  <b>Lyapunov Field Tracking</b><br>
+  <b>Lyapunov exponents for autonomous nODE</b><br>
   <img src="https://github.com/user-attachments/assets/bde6350f-6c31-4ce6-873a-40d64710f232" width="400" />
 </p>
 
