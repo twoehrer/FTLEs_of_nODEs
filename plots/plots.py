@@ -23,7 +23,249 @@ import sys
 # Add the parent directory of plots.py to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def create_gif_shrinkingintervals(model, le_density = 30, point_density = 20, filename = 'LE_shrinking'):
+
+
+
+# Function to set Global rcParams for consistent figure styling (does not override local settings)
+# Better to call this function in the notebook as some plots are located in different files than plots.py
+
+def set_plot_defaults():
+    plt.rcParams.update({
+        "figure.figsize": (5, 5),     # square figure
+        "figure.dpi": 200,
+        "savefig.dpi": 200,
+        "savefig.format": "png",
+        "savefig.bbox": "tight",
+        "savefig.facecolor": "white",
+
+        # --- Fonts (match explicit sizes) ---
+        "font.size": 9,               # base
+        "axes.labelsize": 8,          # x/y labels
+        "axes.titlesize": 10,          # title
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.fontsize": 7,
+    })
+
+
+@torch.no_grad()
+def trajectory_gif_new(model, inputs, targets, timesteps, dpi=200, alpha=0.9,
+                   alpha_line=1, filename='trajectory.gif', axlim = 0, device = 'cpu'):
+    
+    from matplotlib import rc
+    from scipy.interpolate import interp1d
+    rc("text", usetex = False)
+    font = {'size'   : 18}
+    rc('font', **font)
+    
+    if model.cross_entropy == True:
+        raise RuntimeError("This function is not compatible with cross_entropy models at the moment.")
+
+    if not filename.endswith(".gif"):
+        raise RuntimeError("Name must end in with .gif, but ends with {}".format(filename))
+    base_filename = filename[:-4]
+
+
+    if model.output_dim == 2:
+        color = ['C1' if targets[i,1] > 0.0 else 'C0' for i in range(len(targets))]
+    if model.output_dim == 1:
+        color = ['C1' if targets[i] < 0.0 else 'C0' for i in range(len(targets))]
+        print('passed here')
+
+    trajectories = model.flow.trajectory(inputs, timesteps).detach()
+    num_dims = trajectories.shape[2]
+
+    if axlim == 0:        
+        x_min, x_max = trajectories[:, :, 0].min(), trajectories[:, :, 0].max()
+        y_min, y_max = trajectories[:, :, 1].min(), trajectories[:, :, 1].max()
+    else: 
+        x_min, x_max = -axlim, axlim  #to normalize for rob and standard nODE
+        y_min, y_max = -axlim, axlim   #
+        
+    if num_dims == 3:
+        z_min, z_max = trajectories[:, :, 2].min(), trajectories[:, :, 2].max()
+    margin = 0.1
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    x_min -= margin * x_range
+    x_max += margin * x_range
+    y_min -= margin * y_range
+    y_max += margin * y_range
+    if num_dims == 3:
+        z_range = z_max - z_min
+        z_min -= margin * z_range
+        z_max += margin * z_range
+        
+    T = model.T 
+    integration_time = torch.linspace(0.0, T, timesteps)
+    
+    interp_x = []
+    interp_y = []
+    interp_z = []
+    for i in range(inputs.shape[0]):
+        interp_x.append(interp1d(integration_time, trajectories[:, i, 0], kind='cubic', fill_value='extrapolate'))
+        interp_y.append(interp1d(integration_time, trajectories[:, i, 1], kind='cubic', fill_value='extrapolate'))
+        if num_dims == 3:
+            interp_z.append(interp1d(integration_time, trajectories[:, i, 2], kind='cubic', fill_value='extrapolate'))
+    
+    interp_time = timesteps
+    # interp_time = 3 #this was 5 before
+    _time = torch.linspace(0., T, interp_time)
+
+    plt.rc('grid', linestyle="dotted", color='lightgray')
+    for t in range(interp_time):
+        if num_dims == 2:
+            fig = plt.figure()
+            ax = fig.add_subplot(1, 1, 1)
+            label_size = 10
+            # plt.rcParams['xtick.labelsize'] = label_size
+            # plt.rcParams['ytick.labelsize'] = label_size 
+            ax.set_axisbelow(True)
+            ax.xaxis.grid(color='lightgray', linestyle='dotted')
+            ax.yaxis.grid(color='lightgray', linestyle='dotted')
+            ax.set_facecolor('whitesmoke')
+            
+            plt.xlim(x_min, x_max)
+            plt.ylim(y_min, y_max)
+            # plt.rc('text', usetex=False)
+            # plt.rc('font', family='serif')
+            plt.xlabel(r'$x_1$') 
+            plt.ylabel(r'$x_2$')
+            
+            x1 = torch.arange(x_min, x_max, step=0.01, device=device)
+            x2 = torch.arange(y_min, y_max, step=0.01, device=device)
+            xx1, xx2 = torch.meshgrid(x1, x2)  # Meshgrid function as in numpy
+            model_inputs = torch.stack([xx1, xx2], dim=-1)
+            
+            preds = model.linear_layer(model_inputs)
+            
+
+            Z = preds.squeeze()
+            if model.output_dim == 2 and model.cross_entropy == False:
+                Z = preds[..., 1]
+                Z = 1 - torch.clamp((Z + 1)/2, 0.0, 1.0) #normalizes the output trained with MSE to probabilities between 0 and 1
+            elif model.output_dim == 1 and model.cross_entropy == False:
+                Z = torch.clamp((Z + 1)/2, 0.0, 1.0)
+            
+            
+            plt.grid(False)
+            ax = plt.gca()
+            ax.set_aspect('equal') 
+        
+            colors = [to_rgb("C1"), [1, 1, 1], to_rgb("C0")] # first color is orange, last is blue
+            cm = LinearSegmentedColormap.from_list(
+                "Custom", colors, N=40)
+            z = np.array(Z).reshape(xx1.shape)
+            
+            levels = np.linspace(0.,1.,9).tolist()
+            
+            cont = plt.contourf(xx1, xx2, z, levels, alpha=0.5, cmap=cm, zorder = 0, extent=(x_min, x_max, y_min, y_max)) #plt.get_cmap('coolwarm')
+            
+            
+            
+            
+            plt.scatter([x(_time)[t] for x in interp_x], 
+                         [y(_time)[t] for y in interp_y], 
+                         c=color, alpha=alpha, marker = 'o', linewidth=0.65, edgecolors='black', zorder=3)
+
+            if t > 0:
+                for i in range(inputs.shape[0]):
+                    x_traj = interp_x[i](_time)[:t+1]
+                    y_traj = interp_y[i](_time)[:t+1]
+                    plt.plot(x_traj, y_traj, c=color[i], alpha=alpha_line, linewidth = 0.75, zorder=1)
+            
+        
+        ax.set_aspect('equal')
+
+        plt.savefig(base_filename + "{}.png".format(t),
+                    format='png', dpi=dpi, bbox_inches='tight', facecolor = 'white')
+        # Save only 3 frames (.pdf for paper)
+        # if t in [0, interp_time//5, interp_time//2, interp_time-1]:
+        #     plt.savefig(base_filename + "{}.pdf".format(t), format='pdf', bbox_inches='tight')
+        plt.clf()
+        plt.close()
+
+    imgs = []
+    for i in range(interp_time):
+        img_file = base_filename + "{}.png".format(i)
+        imgs.append(imageio.imread(img_file))
+        if i not in [0, interp_time//5, interp_time//2, interp_time-1]: os.remove(img_file) 
+    imageio.mimwrite(filename, imgs, fps = 2)
+
+
+
+
+def create_gif_growinginterval(model, le_density = 30, vf_density = 20, filename = 'LE_growing', save_pngs = False):
+    """
+    Creates a GIF showing the finite-time Lyapunov exponents for each parameter subinterval.
+    
+    Parameters:
+    - model: The neural ODE model.
+    - le_amount: Number of Lyapunov exponent intervals.
+    - vf_amount: Number of vector field points.
+    - filename: Base name for the output files.
+    """
+    import io
+    from FTLE import LE_grid
+
+
+    ###point plot preparation####
+    # Define the grid for vector field visualization
+    x = torch.linspace(-2,2,vf_density)
+    y = torch.linspace(-2,2,vf_density)
+    X, Y = torch.meshgrid(x, y)
+    inputs_grid = torch.stack([X,Y], dim=-1)
+    inputs_grid = inputs_grid.view(-1,2) #to be able to input all the grid values into the model at once
+
+    #compute traj and colors of grid inputs first, later no more evaluations of model needed
+    trajs, colors = input_to_traj_and_color(model, inputs_grid)
+
+    
+    T = model.T
+    step_size = T/model.time_steps #time step for the integration
+    param_subinterval_len = model.T/model.num_params #time interval has length of the time_steps and the subinterval of constant param has the same length
+    eps = 0.1 * step_size #this should make sure we stay inside an interval with constant parameters for the integration
+    t_values = np.arange(0 + eps, T, step_size) #all discretization steps computed in the nODE flow
+    
+    images = []
+    for i, t in enumerate(t_values):
+        
+        ###FTLE plot
+        le_interval = torch.tensor([0, t], dtype=torch.float32) #the time interval for the FTLE computation
+        
+        print(f't = {t:.2f}')
+        output_max, _ = LE_grid(model, le_density, le_interval)
+            
+        plt.imshow(np.rot90(output_max), origin='upper', extent=(-2, 2, -2, 2), cmap='viridis')
+        cbar = plt.colorbar()
+        # cbar.ax.tick_params(labelsize=10)  # Adjust tick label size
+        
+        ### Plot vector field and points from trajectory
+        plot_vectorfield(model, t, inputs_grid) 
+        plot_points_from_traj(trajs, colors, model, t) #this + step_size here does not make sense yet must still be explained.
+        
+        plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
+        plt.xlim(-2, 2)
+        plt.ylim(-2, 2)
+        plt.xlabel(r"$x_1$")
+        plt.ylabel(r"$x_2$")
+        plt.tick_params(axis='both', which='major')
+        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ')
+        
+        buf = io.BytesIO()
+        plt.savefig(buf)
+        if save_pngs:
+            plt.savefig(filename + f'_{i}.png')
+            print(f'Saved PNG for t={t:.1f}, i={i}')
+        buf.seek(0)  # rewind to beginning of buffer
+        images.append(imageio.imread(buf))  # or use PIL.Image.open(buf)
+        buf.close()
+        plt.close()
+        print(f'Generated plot for t={t:.1f}')
+    
+    imageio.mimsave(filename + '.gif', images, fps=4)
+
+def create_gif_shrinkingintervals(model, le_density = 30, point_density = 20, filename = 'LE_shrinking', save_pngs = False):
     """
     Creates a GIF showing the evolution of input points and the future Lyapunov exponents. As the time progresses, the remaining Lyapunov exponent intervals shrink, reflecting the model's dynamics.
     
@@ -55,7 +297,7 @@ def create_gif_shrinkingintervals(model, le_density = 30, point_density = 20, fi
     
     images = []
     
-    for t in t_values:
+    for i, t in enumerate(t_values):
     
         ###FTLE plot
         le_interval = torch.tensor([t, T], dtype=torch.float32)
@@ -63,21 +305,25 @@ def create_gif_shrinkingintervals(model, le_density = 30, point_density = 20, fi
         output_max, _ = LE_grid(model, le_density, le_interval)
         plt.imshow(np.rot90(output_max), origin='upper', extent=(-2, 2, -2, 2), cmap='viridis')
         cbar = plt.colorbar()
-        cbar.ax.tick_params(labelsize=10)  # Adjust tick label size
+        cbar.ax.tick_params()  # Adjust tick label size
         
         ### Plot points from trajectory
-        plot_points_from_traj(trajs, colors, model, t) #this + step_size here does not make sense yet must still be explained.
+        plot_points_from_traj(trajs, colors, model, t) 
         
         plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
         plt.xlim(-2, 2)
         plt.ylim(-2, 2)
-        plt.xlabel(r"$x_1$", fontsize=5)
-        plt.ylabel(r"$x_2$", fontsize=5)
-        plt.tick_params(axis='both', which='major', labelsize=5)
-        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ', fontsize = 7)
+        plt.xlabel(r"$x_1$")
+        plt.ylabel(r"$x_2$")
+        plt.tick_params(axis='both', which='major')
+        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ')
+        
+        if save_pngs:  # Save every 5th frame as PNG
+            plt.savefig(filename + f'_{i}.png')
+            print(f'Saved PNG for t={t:.1f}, i={i}')
         
         buf = io.BytesIO()
-        plt.savefig(buf, bbox_inches='tight', dpi=200, format='png', facecolor='white')
+        plt.savefig(buf, bbox_inches='tight')
         buf.seek(0)  # rewind to beginning of buffer
         images.append(imageio.imread(buf))  # or use PIL.Image.open(buf)
         buf.close()
@@ -89,7 +335,7 @@ def create_gif_shrinkingintervals(model, le_density = 30, point_density = 20, fi
 
 
 
-def create_gif_subintervals(model, le_density = 30, vf_density = 20, filename = 'LE_per_param'):
+def create_gif_subintervals(model, le_density = 30, vf_density = 20, filename = 'LE_per_param', save_pngs = False):
     """
     Creates a GIF showing the finite-time Lyapunov exponents for each parameter subinterval.
     
@@ -119,11 +365,11 @@ def create_gif_subintervals(model, le_density = 30, vf_density = 20, filename = 
     step_size = T/model.time_steps #time step for the integration
     param_subinterval_len = model.T/model.num_params #time interval has length of the time_steps and the subinterval of constant param has the same length
     eps = 0.1 * step_size #this should make sure we stay inside an interval with constant parameters for the integration
-    t_values = np.arange(0 + eps, T-step_size, step_size) #all discretization steps computed in the nODE flow
+    t_values = np.arange(0 + eps, T, step_size) #all discretization steps computed in the nODE flow
     
     images = []
     k_running = -1
-    for t in t_values:
+    for i, t in enumerate(t_values):
         
         ###FTLE plot
         k = int(t // param_subinterval_len) #which parameter interval we are in
@@ -135,30 +381,36 @@ def create_gif_subintervals(model, le_density = 30, vf_density = 20, filename = 
             
         plt.imshow(np.rot90(output_max), origin='upper', extent=(-2, 2, -2, 2), cmap='viridis')
         cbar = plt.colorbar()
-        cbar.ax.tick_params(labelsize=10)  # Adjust tick label size
+        
+        # cbar.ax.tick_params(labelsize = 10)  # Adjust tick label size
         
         ### Plot vector field and points from trajectory
-        plot_vectorfield(model, t , inputs_grid)
-        plot_points_from_traj(trajs, colors, model, t + step_size) #this + step_size here does not make sense yet must still be explained.
+        plot_vectorfield(model, t, inputs_grid) 
+        plot_points_from_traj(trajs, colors, model, t) #this + step_size here does not make sense yet must still be explained.
         
         plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
         plt.xlim(-2, 2)
         plt.ylim(-2, 2)
-        plt.xlabel(r"$x_1$", fontsize=5)
-        plt.ylabel(r"$x_2$", fontsize=5)
-        plt.tick_params(axis='both', which='major', labelsize=5)
-        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ', fontsize = 7)
+        plt.xlabel(r"$x_1$")
+        plt.ylabel(r"$x_2$")
+        plt.tick_params(axis='both', which='major')
+        plt.title(f'Time {t:.2f}, FTLE interval [{le_interval[0].item():.2f}, {le_interval[1].item():.2f}] ')
         
         buf = io.BytesIO()
         plt.savefig(buf, bbox_inches='tight', dpi=200, format='png', facecolor='white')
+        if save_pngs:
+            if i == 0 or int((t + step_size) // param_subinterval_len) != k_running or i + 1 == len(t_values): #save the pngs only if the parameter interval changes in next step or if it is the final step
+                plt.savefig(filename + f'_{i}.png', bbox_inches='tight', dpi=200, format='png', facecolor='white')
+                print(f'Saved PNG for t={t:.1f}, k={k}')
         buf.seek(0)  # rewind to beginning of buffer
         images.append(imageio.imread(buf))  # or use PIL.Image.open(buf)
         buf.close()
         plt.close()
-        print(f'Saved plot for t={t:.1f}')
+        print(f'Generated plot for t={t:.1f}')
     
     imageio.mimsave(filename + '.gif', images, fps=4)
 
+@torch.no_grad()
 def input_to_traj_and_color(model, inputs):
     """
     Computes the trajectory of the inputs through the model and colors them based on the model's predictions. Only requires one input to output call of the model.
@@ -181,6 +433,7 @@ def input_to_traj_and_color(model, inputs):
     
     return traj, colors
 
+@torch.no_grad()
 def plot_points_from_traj(trajs, colors, model, time):
     """
     based on trajectories and corresponding pred color of the model, this function plots the points at a given time.
@@ -193,7 +446,7 @@ def plot_points_from_traj(trajs, colors, model, time):
 
     
     
-
+@torch.no_grad()
 def plot_points(model, inputs, targets_dummy, time_interval = None, dpi=200, alpha=0.9,
                     alpha_line=0.9, x_lim = [-2,2], y_lim = [-2,2]):
     #targets_dummy is a dummy variable to have the unchanged input for old files. should be removed once the update works.
@@ -232,6 +485,7 @@ def plot_points(model, inputs, targets_dummy, time_interval = None, dpi=200, alp
     plt.xlim(x_min, x_max)
     plt.ylim(y_min, y_max)
 
+@torch.no_grad()
 def plot_vectorfield(anode, t, inputs, show = False):
     
     
@@ -248,7 +502,7 @@ def plot_vectorfield(anode, t, inputs, show = False):
         # plt.gca().set_aspect('equal', adjustable='box')  # more robust than plt.axis('equal')
         plt.show()
 
-
+@torch.no_grad()
 def plot_trajectory(model, inputs, targets, stepsize, time_interval = None, dpi=200, alpha=0.9,
                     alpha_line=0.9, x_lim = [-2,2], y_lim = [-2,2], show = True):
     """
@@ -290,6 +544,107 @@ def plot_trajectory(model, inputs, targets, stepsize, time_interval = None, dpi=
     
     if show:
         plt.show()
+        
+def plot_FTLEs(LE_values, title = None, filename = None):
+    plt.figure()
+    ax_lim = 2
+    plt.imshow(np.rot90(LE_values), origin='upper', extent=(-ax_lim, ax_lim, -ax_lim, ax_lim),cmap = 'viridis')
+    # vmin, vmax = anodeimg.get_clim() # could be used to set same color scale for both plots
+    cbar = plt.colorbar()  # Show color scale
+    cbar.set_label('Lyapunov Exponent', fontsize = 11)
+    
+    if title is not None:
+        plt.title(title)
+    plt.xlabel(r"$x_1$")
+    plt.ylabel(r"$x_2$")
+    if filename is not None:
+        plt.savefig(filename + '.png')
+        plt.clf()
+        plt.close()
+    else: plt.show()
+        
+@torch.no_grad()
+def classification_levelsets(model, fig_name=None, footnote=None, contour = True, plotlim = [-2, 2], alpha = 1, num_levels = 8):
+    
+    
+    x1lower, x1upper = plotlim
+    x2lower, x2upper = plotlim
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    fig = plt.figure()
+    
+    plt.ylabel(r"$x_2$")
+    plt.xlabel(r"$x_1$")
+
+    
+   
+    model.to(device)
+
+    x1 = torch.arange(x1lower, x1upper, step=0.01, device=device)
+    x2 = torch.arange(x2lower, x2upper, step=0.01, device=device)
+    xx1, xx2  = torch.meshgrid(x1, x2)  # Meshgrid function as in numpy should emulate indexing='xy'
+    model_inputs = torch.stack([xx1, xx2], dim=-1)
+    
+    preds, _ = model(model_inputs)
+    print('shape preds', preds.shape)
+    if model.output_dim == 1 and model.cross_entropy == False:
+        Z = preds.squeeze()  # normalizes the model predictions to probabilities
+        Z = torch.clamp((Z + 1)/2, 0.0, 1.0) #normalizes the output trained with MSE to probabilities between 0 and 1
+        print('shape Z', Z.shape)
+    elif model.output_dim == 2 and model.cross_entropy == False:
+        Z = preds.squeeze() 
+        Z = preds[..., 1]
+        print('shape preds', preds.shape)
+        Z = 1 - torch.clamp((Z + 1)/2, 0.0, 1.0) #normalizes the output trained with MSE to probabilities between 0 and 1
+    else:
+        Z = preds.softmax(dim=-1)[..., 0]    # (len_x2, len_x1) THIS NEEDS FIXING IF NOT CE! RESSCALING
+        print('shape Z', Z.shape)
+
+# Convert for matplotlib
+    X = xx1.detach().cpu().numpy()
+    Y = xx2.detach().cpu().numpy()
+    Z = Z.detach().cpu().numpy()
+    
+    print('shape check:',X.shape == Y.shape == Z.shape)
+    
+    # # dim = 2 means that it normalizes along the last dimension, i.e. along the two predictions that are the model output
+    # m = nn.Softmax(dim=2)
+    # # softmax normalizes the model predictions to probabilities
+    # preds = m(preds)
+
+    #we only need the probability for being in class1 (as prob for class2 is then 1- class1)
+   
+    
+    plt.grid(False)
+    plt.xlim([x1lower, x1upper])
+    plt.ylim([x2lower, x2upper])
+
+    ax = plt.gca()
+    ax.set_aspect('equal') 
+    
+    if contour:
+        colors = [to_rgb("C1"), [1, 1, 1], to_rgb("C0")] # first color is orange, last is blue
+        cm = LinearSegmentedColormap.from_list(
+            "Custom", colors, N=40)
+       
+        
+        levels = np.linspace(0.,1.,num_levels).tolist()
+        
+        cont = plt.contourf(X, Y, Z, levels, alpha=alpha, cmap=cm, zorder = 0) #plt.get_cmap('coolwarm')
+        cbar = fig.colorbar(cont) #, fraction=0.046, pad=0.04
+        cbar.ax.set_ylabel('prediction prob.', fontsize = 11)
+        
+    
+        
+    plt.figtext(0.5, -0.02, footnote, ha="center", fontsize = 6)
+    
+
+    if fig_name:
+        plt.savefig(fig_name + '.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
+        plt.clf()
+        plt.close()
+    else: plt.show()
 
 
 @torch.no_grad()
@@ -364,7 +719,7 @@ def visualize_classification(model, data, label, grad = None, fig_name=None, foo
         
         cont = plt.contourf(xx1, xx2, z, levels, alpha=1, cmap=cm, zorder = 0, extent=(x1lower, x1upper, x2lower, x2upper)) #plt.get_cmap('coolwarm')
         cbar = fig.colorbar(cont, fraction=0.046, pad=0.04)
-        cbar.ax.set_ylabel('prediction prob.')
+        cbar.ax.set_ylabel('prediction prob.', fontsize = 11)
 
 
 
@@ -375,81 +730,7 @@ def visualize_classification(model, data, label, grad = None, fig_name=None, foo
     return fig
 
 
-@torch.no_grad()
-def classification_levelsets(model, fig_name=None, footnote=None, contour = True, plotlim = [-2, 2]):
-    
-    
-    x1lower, x1upper = plotlim
-    x2lower, x2upper = plotlim
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    fig = plt.figure(figsize=(5, 5), dpi=100)
-    
-    plt.ylabel(r"$x_2$")
-    plt.xlabel(r"$x_1$")
-    plt.figtext(0.5, -0.02, footnote, ha="center", fontsize=9)
-
-    
-   
-    model.to(device)
-
-    x1 = torch.arange(x1lower, x1upper, step=0.01, device=device)
-    x2 = torch.arange(x2lower, x2upper, step=0.01, device=device)
-    xx1, xx2  = torch.meshgrid(x1, x2)  # Meshgrid function as in numpy should emulate indexing='xy'
-    model_inputs = torch.stack([xx1, xx2], dim=-1)
-    
-    preds, _ = model(model_inputs)
-    print('shape preds', preds.shape)
-    if model.output_dim == 1 and model.cross_entropy == False:
-        Z = preds.squeeze()  # normalizes the model predictions to probabilities
-        Z = torch.clamp((Z + 1)/2, 0.0, 1.0) #normalizes the output trained with MSE to probabilities between 0 and 1
-        print('shape Z', Z.shape)
-    else:
-        Z = preds.softmax(dim=-1)[..., 0]    # (len_x2, len_x1)
-        print('shape Z', Z.shape)
-
-# Convert for matplotlib
-    X = xx1.detach().cpu().numpy()
-    Y = xx2.detach().cpu().numpy()
-    Z = Z.detach().cpu().numpy()
-    
-    print('shape check:',X.shape == Y.shape == Z.shape)
-    
-    # # dim = 2 means that it normalizes along the last dimension, i.e. along the two predictions that are the model output
-    # m = nn.Softmax(dim=2)
-    # # softmax normalizes the model predictions to probabilities
-    # preds = m(preds)
-
-    #we only need the probability for being in class1 (as prob for class2 is then 1- class1)
-   
-    
-    plt.grid(False)
-    plt.xlim([x1lower, x1upper])
-    plt.ylim([x2lower, x2upper])
-
-    ax = plt.gca()
-    ax.set_aspect('equal') 
-    
-    if contour:
-        colors = [to_rgb("C1"), [1, 1, 1], to_rgb("C0")] # first color is orange, last is blue
-        cm = LinearSegmentedColormap.from_list(
-            "Custom", colors, N=40)
-       
-        
-        levels = np.linspace(0.,1.,8).tolist()
-        
-        cont = plt.contourf(X, Y, Z, levels, alpha=1, cmap=cm, zorder = 0) #plt.get_cmap('coolwarm')
-        cbar = fig.colorbar(cont, fraction=0.046, pad=0.04)
-        cbar.ax.set_ylabel('prediction prob.')
-        
-    
-
-    if fig_name:
-        plt.savefig(fig_name + '.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
-        plt.clf()
-        plt.close()
-    else: plt.show()
         
 def loss_evolution(trainer, epoch, filename = '', figsize = None, footnote = None):
     print(f'{epoch = }')

@@ -138,7 +138,6 @@ class Dynamics(nn.Module):
 class Dynamics_with_layers(nn.Module):
     """
     The nonlinear, right hand side $f(u(t), x(t)) of the neural ODE.
-    We distinguish the different structures defined in the dictionary "architectures" just above.
     """
     def __init__(self, device, data_dim, hidden_dim, augment_dim=0, 
                 non_linearity='tanh', T=10, layers_hidden = 4):

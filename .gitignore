@@ -7,6 +7,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+#old files that are not needed anymore but should not be deleted
+/old_files
+
 # C extensions
 *.so
 
