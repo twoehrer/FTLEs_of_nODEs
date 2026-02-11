@@ -1,4 +1,5 @@
 #containbs all the relevant functions to compute the finite time lyapunov exponents (FTLEs) used for the plots
+#code by Tobias Woehrer
 
 
 import numpy as np
