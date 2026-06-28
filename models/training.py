@@ -1,0 +1,744 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+adapted from https://github.com/EmilienDupont/augmented-neural-odes)
+"""
+import json
+import torch.nn as nn
+import numpy as np
+from numpy import mean
+import torch
+# from torch.utils.tensorboard import SummaryWriter
+
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import make_moons, make_circles, make_blobs
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+
+from torch.utils import data as data
+from torch.utils.data import DataLoader, TensorDataset
+
+
+# Add the parent directory of plots.py to sys.path
+# This allows us to import FTLE.py from the parent directory
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+
+losses = {'mse': nn.MSELoss(),
+          'cross_entropy': nn.CrossEntropyLoss(),
+          'ell1': nn.SmoothL1Loss()
+}
+
+
+def save_model(model, path):
+    """Save a NeuralODEvar model to a .pth file.
+
+    Stores the constructor config alongside the state_dict so the model can
+    be fully reconstructed without knowing the original hyperparameters.
+    """
+    checkpoint = {
+        'config': {
+            'data_dim':       model.data_dim,
+            'hidden_dim':     model.hidden_dim,
+            'output_dim':     model.output_dim,
+            'augment_dim':    model.augment_dim,
+            'non_linearity':  model.non_linearity_str,
+            'tol':            model.tol,
+            'adjoint':        model.adjoint,
+            'architecture':   model.architecture,
+            'T':              model.T,
+            'time_steps':     model.time_steps,
+            'num_params':     model.num_params,
+            'cross_entropy':  model.cross_entropy,
+            'fixed_projector': model.fixed_projector,
+            'layers_hidden':  model.layers_hidden,
+        },
+        'state_dict': model.state_dict(),
+    }
+    torch.save(checkpoint, path)
+
+
+def save_history(histories, path):
+    """Save a trainer's histories dict to a JSON file.
+
+    Args:
+        histories: the .histories dict from any trainer (lists of floats).
+        path:      destination file path (e.g. 'subfolder/history_control.json').
+    """
+    with open(path, 'w') as f:
+        json.dump(histories, f)
+
+
+def load_history(path):
+    """Load a histories dict saved with save_history().
+
+    Returns:
+        dict with the same keys/values that were saved.
+    """
+    with open(path) as f:
+        return json.load(f)
+
+
+def load_model(path, device=None):
+    """Load a NeuralODEvar model saved with save_model().
+
+    Args:
+        path:   Path to the .pth file written by save_model().
+        device: torch.device to load onto. Defaults to CPU.
+
+    Returns:
+        model in eval() mode on the requested device.
+    """
+    from models.neural_odes import NeuralODEvar
+
+    if device is None:
+        device = torch.device('cpu')
+
+    checkpoint = torch.load(path, map_location=device)
+    cfg = checkpoint['config']
+
+    model = NeuralODEvar(
+        device=device,
+        data_dim=cfg['data_dim'],
+        hidden_dim=cfg['hidden_dim'],
+        output_dim=cfg['output_dim'],
+        augment_dim=cfg['augment_dim'],
+        non_linearity=cfg['non_linearity'],
+        tol=cfg['tol'],
+        adjoint=cfg['adjoint'],
+        architecture=cfg['architecture'],
+        T=cfg['T'],
+        time_steps=cfg['time_steps'],
+        num_params=cfg['num_params'],
+        cross_entropy=cfg['cross_entropy'],
+        fixed_projector=cfg['fixed_projector'],
+        layers_hidden=cfg['layers_hidden'],
+    )
+    model.load_state_dict(checkpoint['state_dict'])
+    model.eval()
+    return model
+
+from FTLE import LEs, mLEs_fast
+import torch.nn.functional as F
+
+class FTLE_Trainer():
+    """
+    Trainer class for training neural ODEs that incorporates FTLE regularization. Built from core of doublebackTrainer.
+    Parameters:
+    - model: The neural ODE model to be trained
+    - le_reg: Regularization strength for the FTLE term
+    - device: Device to run the computations on ('cpu' or 'cuda')
+    - time_interval: Time interval for FTLE computation (default uses the subinterval where the first parameter is active)
+    """
+
+    
+    def __init__(self, model, le_reg = 0., device = 'cpu', time_interval = None, le_threshold = 0.05):
+        self.model = model
+        self.device = device
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3) 
+        self.loss_func = nn.MSELoss()
+        self.steps = 0
+        self.le_reg = le_reg
+        self.le_threshold = le_threshold
+        if time_interval is None:
+            self.time_interval = torch.tensor([0., self.model.T / self.model.num_params]) #compute LE only on first subinterval
+        else:
+            self.time_interval = time_interval
+
+        self.histories = {'loss_history': [], 'loss_le_history': [],'acc_history': [],
+                          'epoch_loss_history': [], 'epoch_loss_le_history': [],  'epoch_acc_history': []}
+        self.buffer = {'loss': [], 'loss_le': [], 'accuracy': []}
+
+
+    def train(self, data_loader, num_epochs, le_num_iter=20):
+        for epoch in range(num_epochs):
+            avg_loss = self._train_epoch(data_loader, epoch, le_num_iter)
+            print("Epoch {}: {:.3f}".format(epoch + 1, avg_loss))
+
+    def _train_epoch(self, data_loader, epoch, le_num_iter=20):
+        epoch_loss = 0.
+        epoch_loss_le = 0.
+        epoch_acc = 0.
+        loss_le = torch.tensor(0.)
+        
+        for i, (x_batch, y_batch) in enumerate(data_loader):
+                # if i == 0:
+                #     print('first data batch', x_batch[0], y_batch[0])
+            self.optimizer.zero_grad()
+            x_batch = x_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+      
+            y_pred, _ = self.model(x_batch)   
+
+
+            ## Classical empirical risk minimization
+            loss = self.loss_func(y_pred, y_batch)
+            
+            
+            ## Add FTLE regularization
+            if self.le_reg > 0:
+                x_batch = x_batch.detach().requires_grad_(True) #do not need any history for x_batch from before, only need it for the LE computation
+
+                les = mLEs_fast(x_batch, self.model, compute_gradients=True, time_interval=self.time_interval, n_iter=le_num_iter)  # (B,)
+                max_les = les                                                                                    # (B,)
+                penalties = F.relu(max_les - self.le_threshold)                                                  # hinge loss
+                loss_le = self.le_reg * penalties.mean()
+
+                loss += loss_le
+
+            loss.backward()
+            self.optimizer.step()
+        
+            epoch_loss += loss.item()
+            if self.le_reg > 0:
+                epoch_loss_le += loss_le.item()
+
+            if i % 10 == 0:
+                
+                print("\nEpoch {}\nIteration {}/{}".format(epoch, i, len(data_loader)))   
+                print("Loss: {:.3f}".format(loss))
+                print("Loss_le: {:.3f}".format(loss_le))
+                        
+            self.buffer['loss'].append(loss.item())
+            self.buffer['loss_le'].append(loss_le.item())
+            
+
+            # At every record_freq iteration, record mean loss and clear buffer
+            if self.steps % 10 == 0:
+                self.histories['loss_history'].append(mean(self.buffer['loss']))
+                self.histories['loss_le_history'].append(mean(self.buffer['loss_le']))
+                
+
+                # Clear buffer
+                self.buffer['loss'] = []
+                self.buffer['loss_le'] = []
+                self.buffer['accuracy'] = []
+
+
+            self.steps += 1
+
+        # Record epoch mean information
+        self.histories['epoch_loss_history'].append(epoch_loss / len(data_loader))
+        self.histories['epoch_loss_le_history'].append(epoch_loss_le / len(data_loader))
+        
+        # self.histories['ep']
+      
+        self.histories['epoch_acc_history'].append(epoch_acc / len(data_loader))
+
+        return epoch_loss / len(data_loader)
+
+
+
+
+
+class FTLE_flossing():
+    """
+    Trainer that separates task loss and FTLE regularisation into two distinct,
+    never-combined training modes.  Call train() multiple times, alternating
+    between modes — hence "flossing".
+
+    Constructor parameters:
+        model  — the NeuralODEvar to train
+        device — torch device string (default 'cpu')
+
+    train(data_loader, num_epochs, mode='task', threshold=0.05, interval=None):
+        mode='task'  — minimise MSELoss only; no FTLE penalty whatsoever
+        mode='ftle'  — minimise the FTLE hinge penalty only; no task loss
+        threshold    — hinge threshold for 'ftle' mode (default 0.05)
+        interval     — torch.Tensor([t0, t1]) for FTLE computation in 'ftle'
+                       mode; defaults to the first time subinterval [0, T/num_params]
+
+    History lists (same names as FTLE_Trainer for drop-in plot compatibility):
+        loss_history / epoch_loss_history      — task loss (0 during 'ftle' rounds)
+        loss_le_history / epoch_loss_le_history — FTLE loss (0 during 'task' rounds)
+    """
+
+    def __init__(self, model, device='cpu'):
+        self.model = model
+        self.device = device
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        self.loss_func = nn.MSELoss()
+        self.steps = 0
+
+        self.histories = {
+            'loss_history': [], 'loss_le_history': [],
+            'epoch_loss_history': [], 'epoch_loss_le_history': [],
+        }
+        self.buffer = {'loss': [], 'loss_le': []}
+
+    def train(self, data_loader, num_epochs, mode='task', threshold=0.05, interval=None, le_reg=1.0):
+        if mode not in ('task', 'ftle', 'combined'):
+            raise ValueError("mode must be 'task', 'ftle', or 'combined'")
+        if interval is None:
+            interval = torch.tensor([0., self.model.T / self.model.num_params])
+        for epoch in range(num_epochs):
+            if mode == 'task':
+                avg = self._train_epoch_task(data_loader, epoch)
+                print("Epoch {} [task]: {:.3f}".format(epoch + 1, avg))
+            elif mode == 'ftle':
+                avg = self._train_epoch_ftle(data_loader, epoch, threshold, interval)
+                print("Epoch {} [ftle]: {:.3f}".format(epoch + 1, avg))
+            else:
+                avg = self._train_epoch_combined(data_loader, epoch, threshold, interval, le_reg)
+                print("Epoch {} [combined]: {:.3f}".format(epoch + 1, avg))
+
+    def _train_epoch_task(self, data_loader, epoch):
+        epoch_loss = 0.
+
+        for i, (x_batch, y_batch) in enumerate(data_loader):
+            self.optimizer.zero_grad()
+            x_batch = x_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+
+            y_pred, _ = self.model(x_batch)
+            loss = self.loss_func(y_pred, y_batch)
+
+            loss.backward()
+            self.optimizer.step()
+
+            epoch_loss += loss.item()
+
+            if i % 10 == 0:
+                print("\nEpoch {}\nIteration {}/{}".format(epoch, i, len(data_loader)))
+                print("Loss (task): {:.3f}".format(loss))
+
+            self.buffer['loss'].append(loss.item())
+            self.buffer['loss_le'].append(0.)
+
+            if self.steps % 10 == 0:
+                self.histories['loss_history'].append(mean(self.buffer['loss']))
+                self.histories['loss_le_history'].append(mean(self.buffer['loss_le']))
+                self.buffer['loss'] = []
+                self.buffer['loss_le'] = []
+
+            self.steps += 1
+
+        self.histories['epoch_loss_history'].append(epoch_loss / len(data_loader))
+        self.histories['epoch_loss_le_history'].append(0.)
+        return epoch_loss / len(data_loader)
+
+    def _train_epoch_ftle(self, data_loader, epoch, threshold, interval):
+        epoch_loss_le = 0.
+
+        for i, (x_batch, _) in enumerate(data_loader):
+            self.optimizer.zero_grad()
+            x_batch = x_batch.to(self.device)
+
+            # Pass 1 — cheap screen: compute LEs without building a computation graph.
+            # Only inputs whose max LE exceeds the threshold can produce a non-zero
+            # gradient, so there is no point in running the expensive create_graph=True
+            # Jacobian + compute_uv SVD for inputs that are already below threshold.
+            with torch.no_grad():
+                les_screen = mLEs_fast(x_batch, self.model, compute_gradients=False, time_interval=interval)
+                active_mask = les_screen > threshold
+
+            if not active_mask.any():
+                # All inputs already below threshold — no gradient to compute.
+                self.buffer['loss'].append(0.)
+                self.buffer['loss_le'].append(0.)
+                if self.steps % 10 == 0:
+                    self.histories['loss_history'].append(mean(self.buffer['loss']))
+                    self.histories['loss_le_history'].append(mean(self.buffer['loss_le']))
+                    self.buffer['loss'] = []
+                    self.buffer['loss_le'] = []
+                self.steps += 1
+                continue
+
+            # Pass 2 — expensive: recompute only for active inputs with full graph.
+            active = x_batch[active_mask]
+            les = mLEs_fast(active, self.model, compute_gradients=True, time_interval=interval)
+            loss_le = (les - threshold).mean()
+            loss_le.backward()
+            self.optimizer.step()
+
+            epoch_loss_le += loss_le.item()
+
+            if i % 10 == 0:
+                print("\nEpoch {}\nIteration {}/{}".format(epoch, i, len(data_loader)))
+                print("Loss (ftle): {:.3f}".format(loss_le))
+
+            self.buffer['loss'].append(0.)
+            self.buffer['loss_le'].append(loss_le.item())
+
+            if self.steps % 10 == 0:
+                self.histories['loss_history'].append(mean(self.buffer['loss']))
+                self.histories['loss_le_history'].append(mean(self.buffer['loss_le']))
+                self.buffer['loss'] = []
+                self.buffer['loss_le'] = []
+
+            self.steps += 1
+
+        self.histories['epoch_loss_history'].append(0.)
+        self.histories['epoch_loss_le_history'].append(epoch_loss_le / len(data_loader))
+        return epoch_loss_le / len(data_loader)
+
+    def _train_epoch_combined(self, data_loader, epoch, threshold, interval, le_reg):
+        epoch_loss = 0.
+        epoch_loss_le = 0.
+        epoch_active = 0
+        epoch_total = 0
+
+        for i, (x_batch, y_batch) in enumerate(data_loader):
+            self.optimizer.zero_grad()
+            x_batch = x_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+
+            # Pass 1 — cheap screen: find high-FTLE inputs
+            with torch.no_grad():
+                les_screen = mLEs_fast(x_batch, self.model,
+                                       compute_gradients=False, time_interval=interval)
+                active_mask = les_screen > threshold
+
+            epoch_total += len(active_mask)
+
+            if not active_mask.any():
+                self.buffer['loss'].append(0.)
+                self.buffer['loss_le'].append(0.)
+                if self.steps % 10 == 0:
+                    self.histories['loss_history'].append(mean(self.buffer['loss']))
+                    self.histories['loss_le_history'].append(mean(self.buffer['loss_le']))
+                    self.buffer['loss'] = []
+                    self.buffer['loss_le'] = []
+                self.steps += 1
+                continue
+
+            epoch_active += active_mask.sum().item()
+
+            # Pass 2 — task + FTLE loss, only for active inputs
+            active_x = x_batch[active_mask]
+            active_y = y_batch[active_mask]
+
+            y_pred, _ = self.model(active_x)
+            loss_task = self.loss_func(y_pred, active_y)
+
+            les = mLEs_fast(active_x, self.model,
+                            compute_gradients=True, time_interval=interval)
+            loss_le = (les - threshold).mean()
+
+            loss = loss_task + le_reg * loss_le
+            loss.backward()
+            self.optimizer.step()
+
+            epoch_loss += loss_task.item()
+            epoch_loss_le += loss_le.item()
+
+            if i % 10 == 0:
+                print("\nEpoch {}\nIteration {}/{}".format(epoch, i, len(data_loader)))
+                print("Active: {}/{}  Loss (task): {:.3f}  Loss (ftle): {:.3f}".format(
+                    active_mask.sum().item(), len(active_mask), loss_task.item(), loss_le.item()))
+
+            self.buffer['loss'].append(loss_task.item())
+            self.buffer['loss_le'].append(loss_le.item())
+
+            if self.steps % 10 == 0:
+                self.histories['loss_history'].append(mean(self.buffer['loss']))
+                self.histories['loss_le_history'].append(mean(self.buffer['loss_le']))
+                self.buffer['loss'] = []
+                self.buffer['loss_le'] = []
+
+            self.steps += 1
+
+        self.histories['epoch_loss_history'].append(epoch_loss / len(data_loader))
+        self.histories['epoch_loss_le_history'].append(epoch_loss_le / len(data_loader))
+        print("Epoch {} active inputs: {}/{}".format(epoch, epoch_active, epoch_total))
+        return epoch_loss / len(data_loader)
+
+
+class doublebackTrainer():
+    """
+    Given an optimizer, we write the training loop for minimizing the functional.
+    We need several hyperparameters to define the different functionals.
+
+    ***
+    -- The boolean "turnpike" indicates whether we integrate the training error over [0,T]
+    where T is the time horizon intrinsic to the model.
+    -- The boolean "fixed_projector" indicates whether the output layer is given or trained
+    -- The float "bound" indicates whether we consider L1+Linfty reg. problem (bound>0.), or 
+    L2 reg. problem (bound=0.). If bound>0., then bound represents the upper threshold for the 
+    weights+biases.
+    -- eps: Set a strength for the extra loss term that penalizes the gradients of the original loss
+    -- The float eps_comp records the gradient of the standard loss even when robust training is not active (for comparison). Only to be used with eps = 0
+    ***
+    """
+    def __init__(self, model, optimizer, device, cross_entropy=True,
+                 print_freq=10, record_freq=10, verbose=True, save_dir=None, 
+                 turnpike=True, bound=0., fixed_projector=False, eps = 0, l2_factor = 0., eps_comp = 0., db_type = 'l2'):
+        self.model = model
+        self.optimizer = optimizer
+        self.cross_entropy = cross_entropy
+        self.device = device
+        if cross_entropy:
+            self.loss_func = losses['cross_entropy']
+        else:
+            # self.loss_func = losses['mse']
+            self.loss_func = nn.MSELoss()
+        self.print_freq = print_freq
+        self.record_freq = record_freq
+        self.steps = 0
+        self.save_dir = save_dir
+        self.verbose = verbose
+        self.turnpike = turnpike
+        # In case we consider L1-reg. we threshold the norm. 
+        # Examples: M \sim T for toy datasets; 200 for mnist
+        self.threshold = bound    
+        self.fixed_projector = fixed_projector
+
+        self.histories = {'loss_history': [], 'loss_rob_history': [],'acc_history': [],
+                          'epoch_loss_history': [], 'epoch_loss_rob_history': [],  'epoch_acc_history': []}
+        self.buffer = {'loss': [], 'loss_rob': [], 'accuracy': []}
+        self.is_resnet = hasattr(self.model, 'num_layers')
+        self.eps = eps
+        self.eps_comp = eps_comp
+        self.l2_factor = l2_factor
+        self.db_type = db_type
+        
+        # logging_dir='runs/our_experiment'
+        # writer = SummaryWriter(logging_dir)
+
+    def train(self, data_loader, num_epochs):
+        for epoch in range(num_epochs):
+            avg_loss = self._train_epoch(data_loader, epoch)
+            if self.verbose:
+                print("Epoch {}: {:.3f}".format(epoch + 1, avg_loss))
+
+    def _train_epoch(self, data_loader, epoch):
+        epoch_loss = 0.
+        epoch_loss_rob = 0.
+        epoch_acc = 0.
+
+        
+        #If eps = 0, we have standard training, if eps_comp is greater 0, we have standard training but record the gradient term as comparison
+        #if eps > 0 we activate robust training and record the gradient term
+        eps_eff = max(self.eps_comp, self.eps)
+        # print(eps_eff)
+        loss_max = torch.tensor(0.)
+
+
+        x_batch_grad = torch.tensor(0.).to(self.device)
+        
+        for i, (x_batch, y_batch) in enumerate(data_loader):
+                # if i == 0:
+                #     print('first data batch', x_batch[0], y_batch[0])
+            self.optimizer.zero_grad()
+            x_batch = x_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+            
+            
+            
+            if eps_eff > 0.: #!!!!
+                x_batch.requires_grad = True #i need this for calculating the gradient term
+            
+            if not self.is_resnet:
+                y_pred, traj = self.model(x_batch)   
+                time_steps = self.model.time_steps 
+                T = self.model.T
+                dt = T/time_steps
+            else:
+                # In ResNet, dt=1=T/N_layers.
+                y_pred, traj, _ = self.model(x_batch)
+                time_steps = self.model.num_layers
+                T = time_steps
+                dt = 1 
+
+            ## Classical empirical risk minimization
+            loss = self.loss_func(y_pred, y_batch)
+            loss_rob = torch.tensor(0.)
+            # v = torch.tensor([0,1.])
+            #adding perturbed trajectories
+            
+            if self.l2_factor > 0:
+                for param in self.model.parameters():
+                    l2_regularization = param.norm()
+                    loss += self.l2_factor * l2_regularization
+            
+            if eps_eff > 0.:
+                x_batch_grad = torch.autograd.grad(loss, x_batch, create_graph=True, retain_graph=True)[0] #not sure if retrain_graph is necessary here
+                
+                if self.db_type == 'l1':
+                    loss_rob = x_batch_grad.abs().sum() #this corresponds to linfty defense
+                    
+                if self.db_type == 'l2':
+                    loss_rob = x_batch_grad.norm() #this corresponds to l2 defense
+                    
+                loss_rob = eps_eff * loss_rob
+            
+
+            
+
+            if (self.eps > 0.) and (self.eps == eps_eff): #robust loss term is active or is logged + make sure there is no confusing between epsilon of logging and training epsilon
+                loss = (1-self.eps)*loss + loss_rob
+                # print(f'{loss=}')
+                # loss = (1-eps) * loss + eps * adj_term #was 0.005 before
+            loss.backward()
+            self.optimizer.step()
+        
+            
+            if self.cross_entropy:
+                epoch_loss += loss.item()
+                epoch_loss_rob += loss_rob.item() 
+                m = nn.Softmax(dim = 1)
+                # print(y_pred.size())
+                softpred = m(y_pred)
+                softpred = torch.argmax(softpred, 1)  
+                epoch_acc += (softpred == y_batch).sum().item()/(y_batch.size(0))       
+            else:
+                epoch_loss += loss.item()
+                epoch_loss_rob += loss_rob.item()
+                
+        
+            if i % self.print_freq == 0:
+                if self.verbose:
+                    print("\nIteration {}/{}".format(i, len(data_loader)))
+                    if self.cross_entropy:
+                        print("Loss: {:.3f}".format(loss))
+                        print("Robust Term Loss: {:.3f}".format(loss_rob))
+                        
+                        print("Accuracy: {:.3f}".format((softpred == y_batch).sum().item()/(y_batch.size(0))))
+                       
+                    else:
+                        print("Loss: {:.3f}".format(loss))
+                        
+            self.buffer['loss'].append(loss.item())
+            self.buffer['loss_rob'].append(loss_rob.item())
+            
+            
+            if not self.fixed_projector and self.cross_entropy:
+                self.buffer['accuracy'].append((softpred == y_batch).sum().item()/(y_batch.size(0)))
+
+            # At every record_freq iteration, record mean loss and clear buffer
+            if self.steps % self.record_freq == 0:
+                self.histories['loss_history'].append(mean(self.buffer['loss']))
+                self.histories['loss_rob_history'].append(mean(self.buffer['loss_rob']))
+                if not self.fixed_projector and self.cross_entropy:
+                    self.histories['acc_history'].append(mean(self.buffer['accuracy']))
+
+                # Clear buffer
+                self.buffer['loss'] = []
+                self.buffer['loss_rob'] = []
+                self.buffer['accuracy'] = []
+
+                # Save information in directory
+                if self.save_dir is not None:
+                    dir, id = self.save_dir
+                    with open('{}/losses{}.json'.format(dir, id), 'w') as f:
+                        json.dump(self.histories['loss_history'], f)
+
+            self.steps += 1
+
+        # Record epoch mean information
+        self.histories['epoch_loss_history'].append(epoch_loss / len(data_loader))
+        self.histories['epoch_loss_rob_history'].append(epoch_loss_rob / len(data_loader))
+        
+        # self.histories['ep']
+        if not self.fixed_projector:
+            self.histories['epoch_acc_history'].append(epoch_acc / len(data_loader))
+
+        return epoch_loss / len(data_loader)
+    
+            
+
+def create_dataloader(data_type, num_points = 3000, batch_size = 64, noise = 0.15, factor = 0.15, random_state = 1, shuffle = True, plotlim = [-2, 2], cross_entropy = False, label = 'scalar', ticks = True, markersize = 50, filename = 'trainingset'):
+    
+    from sklearn.model_selection import train_test_split
+    from sklearn.datasets import make_moons, make_circles, make_blobs
+    from sklearn.preprocessing import StandardScaler
+    import matplotlib.pyplot as plt
+    from torch.utils import data as data
+    from torch.utils.data import DataLoader, TensorDataset
+    
+    label_types = ['scalar', 'vector']
+    if label not in label_types:
+        raise ValueError("Invalid label type. Expected one of: %s" % label_types)
+    
+    if data_type == 'circles':
+        X, y = make_circles(num_points, noise=noise, factor=factor, random_state=random_state, shuffle = shuffle)
+
+    elif data_type == 'blobs':
+        centers = [[-1, -1], [1, 1]]
+        X, y = make_blobs(
+    n_samples=num_points, centers=centers, cluster_std=noise, random_state=random_state)
+           
+    elif data_type == 'moons':
+        X, y = make_moons(num_points, noise = noise, shuffle = shuffle , random_state = random_state)
+    
+    elif data_type == 'xor':
+        X = torch.randint(low=0, high=2, size=(num_points, 2), dtype=torch.float32)
+        y = np.logical_xor(X[:, 0] > 0, X[:, 1] > 0).float()
+        # y = y.to(torch.int64)
+        X += noise * torch.randn(X.shape)
+        
+    else: 
+        print('datatype not supported')
+        return None, None
+    
+    
+    #Split the data into training and test set
+    X = StandardScaler().fit_transform(X)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=.2, random_state=random_state, shuffle = shuffle)
+    
+    # for plotting purposes
+    data_0 = X_train[y_train == 0]
+    data_1 = X_train[y_train == 1]
+    
+    if filename is not None:
+        plt.figure()
+        plt.scatter(data_1[:, 0], data_1[:, 1], edgecolor="#333", alpha = 0.5, s = markersize)
+        plt.scatter(data_0[:, 0], data_0[:, 1], edgecolor="#333",  alpha = 0.5, s = markersize)
+        plt.xlim(plotlim)
+        plt.ylim(plotlim)
+        ax = plt.gca()
+        ax.set_aspect('equal')
+        plt.xlabel(r'$x_1$')
+        plt.ylabel(r'$x_2$')
+        if ticks == False:
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        plt.savefig(filename + '.png', bbox_inches='tight', dpi=300, format='png', facecolor = 'white')
+        plt.show()
+    
+    
+    if label == 'vector':
+        y_train = np.array([(0., -1.) if label == 1 else (0., 1.) for label in y_train])
+        y_test = np.array([(0., -1.) if label == 1 else (0., 1.) for label in y_test])
+    
+    if label == 'scalar' and cross_entropy == False:
+        y_train = np.array([-1. if label == 1 else 1. for label in y_train])[:,None]  # unsqueeze to make it a 2D tensor for MSE
+        y_test = np.array([-1. if label == 1 else 1. for label in y_test])[:,None]  
+
+    g = torch.Generator()
+    g.manual_seed(random_state)
+    
+    # Convert to torch tensors
+    X_train = torch.Tensor(X_train) # transform to torch tensor for dataloader
+    y_train = torch.Tensor(y_train) #transform to torch tensor for dataloader
+
+    X_test = torch.Tensor(X_test) # transform to torch tensor for dataloader
+    y_test = torch.Tensor(y_test) #transform to torch tensor for dataloader
+
+    if cross_entropy == True:
+        X_train = X_train.type(torch.float32)  #type of orginial pickle.load data
+        y_train = y_train.type(torch.int64) #dtype of original picle.load data
+
+        X_test = X_test.type(torch.float32)  #type of orginial pickle.load data
+        y_test = y_test.type(torch.int64) #dtype of original picle.load data
+        
+    else:
+        X_train = X_train.type(torch.float32)  #type of orginial pickle.load data
+        y_train = y_train.type(torch.float32) #dtype of original picle.load data
+
+        X_test = X_test.type(torch.float32)  #type of orginial pickle.load data
+        y_test = y_test.type(torch.float32) #dtype of original picle.load data
+
+
+    train_data = TensorDataset(X_train,y_train) # create your datset
+    test_data = TensorDataset(X_test, y_test)
+
+    train = DataLoader(train_data, batch_size=batch_size, shuffle=shuffle, generator=g)
+    test = DataLoader(test_data, batch_size=256, shuffle=shuffle, generator = g) #128 before
+
+
+    return train, test
